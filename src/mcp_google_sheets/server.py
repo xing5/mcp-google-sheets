@@ -4,6 +4,7 @@ Google Spreadsheet MCP Server
 A Model Context Protocol (MCP) server built with FastMCP for interacting with Google Sheets.
 """
 
+import base64
 import os
 from typing import List, Dict, Any, Optional, Union
 import json
@@ -23,11 +24,11 @@ from googleapiclient.discovery import build
 
 # Constants
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+CREDENTIALS_CONFIG = os.environ.get('CREDENTIALS_CONFIG', '{}')
 TOKEN_PATH = os.environ.get('TOKEN_PATH', 'token.json')
 CREDENTIALS_PATH = os.environ.get('CREDENTIALS_PATH', 'credentials.json')
 SERVICE_ACCOUNT_PATH = os.environ.get('SERVICE_ACCOUNT_PATH', 'service_account.json')
 DRIVE_FOLDER_ID = os.environ.get('DRIVE_FOLDER_ID', '')  # Working directory in Google Drive
-
 
 @dataclass
 class SpreadsheetContext:
@@ -42,6 +43,9 @@ async def spreadsheet_lifespan(server: FastMCP) -> AsyncIterator[SpreadsheetCont
     """Manage Google Spreadsheet API connection lifecycle"""
     # Authenticate and build the service
     creds = None
+
+    if CREDENTIALS_CONFIG:
+        creds = service_account.Credentials.from_service_account_info(json.loads(base64.b64decode(CREDENTIALS_CONFIG)), SCOPES)
     
     # Check for service account authentication first
     if SERVICE_ACCOUNT_PATH and os.path.exists(SERVICE_ACCOUNT_PATH):
@@ -481,6 +485,143 @@ def rename_sheet(spreadsheet: str,
     return result
 
 
+@mcp.tool()
+def get_multiple_sheet_data(queries: List[Dict[str, str]], 
+                            ctx: Context = None) -> List[Dict[str, Any]]:
+    """
+    Get data from multiple specific ranges in Google Spreadsheets.
+    
+    Args:
+        queries: A list of dictionaries, each specifying a query. 
+                 Each dictionary should have 'spreadsheet_id', 'sheet', and 'range' keys.
+                 Example: [{'spreadsheet_id': 'abc', 'sheet': 'Sheet1', 'range': 'A1:B5'}, 
+                           {'spreadsheet_id': 'xyz', 'sheet': 'Data', 'range': 'C1:C10'}]
+    
+    Returns:
+        A list of dictionaries, each containing the original query parameters 
+        and the fetched 'data' or an 'error'.
+    """
+    sheets_service = ctx.request_context.lifespan_context.sheets_service
+    results = []
+    
+    for query in queries:
+        spreadsheet_id = query.get('spreadsheet_id')
+        sheet = query.get('sheet')
+        range_str = query.get('range')
+        
+        if not all([spreadsheet_id, sheet, range_str]):
+            results.append({**query, 'error': 'Missing required keys (spreadsheet_id, sheet, range)'})
+            continue
+
+        try:
+            # Construct the range
+            full_range = f"{sheet}!{range_str}"
+            
+            # Call the Sheets API
+            result = sheets_service.spreadsheets().values().get(
+                spreadsheetId=spreadsheet_id,
+                range=full_range
+            ).execute()
+            
+            # Get the values from the response
+            values = result.get('values', [])
+            results.append({**query, 'data': values})
+
+        except Exception as e:
+            results.append({**query, 'error': str(e)})
+            
+    return results
+
+
+@mcp.tool()
+def get_multiple_spreadsheet_summary(spreadsheet_ids: List[str],
+                                   rows_to_fetch: int = 5, 
+                                   ctx: Context = None) -> List[Dict[str, Any]]:
+    """
+    Get a summary of multiple Google Spreadsheets, including sheet names, 
+    headers, and the first few rows of data for each sheet.
+    
+    Args:
+        spreadsheet_ids: A list of spreadsheet IDs to summarize.
+        rows_to_fetch: The number of rows (including header) to fetch for the summary (default: 5).
+    
+    Returns:
+        A list of dictionaries, each representing a spreadsheet summary. 
+        Includes spreadsheet title, sheet summaries (title, headers, first rows), or an error.
+    """
+    sheets_service = ctx.request_context.lifespan_context.sheets_service
+    summaries = []
+    
+    for spreadsheet_id in spreadsheet_ids:
+        summary_data = {
+            'spreadsheet_id': spreadsheet_id,
+            'title': None,
+            'sheets': [],
+            'error': None
+        }
+        try:
+            # Get spreadsheet metadata
+            spreadsheet = sheets_service.spreadsheets().get(
+                spreadsheetId=spreadsheet_id,
+                fields='properties.title,sheets(properties(title,sheetId))'
+            ).execute()
+            
+            summary_data['title'] = spreadsheet.get('properties', {}).get('title', 'Unknown Title')
+            
+            sheet_summaries = []
+            for sheet in spreadsheet.get('sheets', []):
+                sheet_title = sheet.get('properties', {}).get('title')
+                sheet_id = sheet.get('properties', {}).get('sheetId')
+                sheet_summary = {
+                    'title': sheet_title,
+                    'sheet_id': sheet_id,
+                    'headers': [],
+                    'first_rows': [],
+                    'error': None
+                }
+                
+                if not sheet_title:
+                    sheet_summary['error'] = 'Sheet title not found'
+                    sheet_summaries.append(sheet_summary)
+                    continue
+                    
+                try:
+                    # Fetch the first few rows (e.g., A1:Z5)
+                    # Adjust range if fewer rows are requested
+                    max_row = max(1, rows_to_fetch) # Ensure at least 1 row is fetched
+                    range_to_get = f"{sheet_title}!A1:{max_row}" # Fetch all columns up to max_row
+                    
+                    result = sheets_service.spreadsheets().values().get(
+                        spreadsheetId=spreadsheet_id,
+                        range=range_to_get
+                    ).execute()
+                    
+                    values = result.get('values', [])
+                    
+                    if values:
+                        sheet_summary['headers'] = values[0]
+                        if len(values) > 1:
+                            sheet_summary['first_rows'] = values[1:max_row]
+                    else:
+                        # Handle empty sheets or sheets with less data than requested
+                        sheet_summary['headers'] = []
+                        sheet_summary['first_rows'] = []
+
+                except Exception as sheet_e:
+                    sheet_summary['error'] = f'Error fetching data for sheet {sheet_title}: {sheet_e}'
+                
+                sheet_summaries.append(sheet_summary)
+            
+            summary_data['sheets'] = sheet_summaries
+            
+        except Exception as e:
+            summary_data['error'] = f'Error fetching spreadsheet {spreadsheet_id}: {e}'
+            
+        summaries.append(summary_data)
+        
+    return summaries
+
+
 @mcp.resource("spreadsheet://{spreadsheet_id}/info")
 def get_spreadsheet_info(spreadsheet_id: str) -> str:
     """
@@ -656,6 +797,84 @@ def list_spreadsheets(ctx: Context = None) -> List[Dict[str, str]]:
     
     return [{'id': sheet['id'], 'title': sheet['name']} for sheet in spreadsheets]
 
+
+@mcp.tool()
+def share_spreadsheet(spreadsheet_id: str, 
+                      recipients: List[Dict[str, str]],
+                      send_notification: bool = True,
+                      ctx: Context = None) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Share a Google Spreadsheet with multiple users via email, assigning specific roles.
+    
+    Args:
+        spreadsheet_id: The ID of the spreadsheet to share.
+        recipients: A list of dictionaries, each containing 'email_address' and 'role'.
+                    The role should be one of: 'reader', 'commenter', 'writer'.
+                    Example: [
+                        {'email_address': 'user1@example.com', 'role': 'writer'},
+                        {'email_address': 'user2@example.com', 'role': 'reader'}
+                    ]
+        send_notification: Whether to send a notification email to the users. Defaults to True.
+
+    Returns:
+        A dictionary containing lists of 'successes' and 'failures'. 
+        Each item in the lists includes the email address and the outcome.
+    """
+    drive_service = ctx.request_context.lifespan_context.drive_service
+    successes = []
+    failures = []
+    
+    for recipient in recipients:
+        email_address = recipient.get('email_address')
+        role = recipient.get('role', 'writer') # Default to writer if role is missing for an entry
+        
+        if not email_address:
+            failures.append({
+                'email_address': None,
+                'error': 'Missing email_address in recipient entry.'
+            })
+            continue
+            
+        if role not in ['reader', 'commenter', 'writer']:
+             failures.append({
+                'email_address': email_address,
+                'error': f"Invalid role '{role}'. Must be 'reader', 'commenter', or 'writer'."
+            })
+             continue
+
+        permission = {
+            'type': 'user',
+            'role': role,
+            'emailAddress': email_address
+        }
+        
+        try:
+            result = drive_service.permissions().create(
+                fileId=spreadsheet_id,
+                body=permission,
+                sendNotificationEmail=send_notification,
+                fields='id'
+            ).execute()
+            successes.append({
+                'email_address': email_address, 
+                'role': role, 
+                'permissionId': result.get('id')
+            })
+        except Exception as e:
+            # Try to provide a more informative error message
+            error_details = str(e)
+            if hasattr(e, 'content'):
+                try:
+                    error_content = json.loads(e.content)
+                    error_details = error_content.get('error', {}).get('message', error_details)
+                except json.JSONDecodeError:
+                    pass # Keep the original error string
+            failures.append({
+                'email_address': email_address,
+                'error': f"Failed to share: {error_details}"
+            })
+            
+    return {"successes": successes, "failures": failures}
 
 def main():
     # Run the server

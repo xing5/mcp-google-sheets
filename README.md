@@ -58,7 +58,28 @@ A Model Context Protocol server for interacting with Google Sheets. This server 
      - `title` (string): The title for the new sheet
    - Returns: Information about the newly created sheet
 
-8. Additional tools: `add_rows`, `add_columns`, `copy_sheet`, `rename_sheet`
+8. `get_multiple_sheet_data`
+   - Get data from multiple specific ranges in Google Spreadsheets
+   - Input:
+     - `queries` (array of objects): Each object specifies 'spreadsheet_id', 'sheet', and 'range'
+   - Returns: List of objects, each containing the query parameters and fetched 'data' or 'error'
+
+9. `get_multiple_spreadsheet_summary`
+   - Get a summary of multiple Google Spreadsheets (title, sheet names, headers, first few rows)
+   - Input:
+     - `spreadsheet_ids` (array of strings): List of spreadsheet IDs
+     - `rows_to_fetch` (optional integer, default 5): Number of rows (including header) to fetch
+   - Returns: List of objects, each representing a spreadsheet summary
+
+10. Additional tools: `add_rows`, `add_columns`, `copy_sheet`, `rename_sheet`
+
+11. `share_spreadsheet`
+    - Share a Google Spreadsheet with multiple users via email, assigning specific roles.
+    - Input:
+      - `spreadsheet_id` (string): The ID of the spreadsheet to share.
+      - `recipients` (array of objects): List of recipients, each with 'email_address' and 'role' ('reader', 'commenter', 'writer').
+      - `send_notification` (optional boolean, default True): Whether to send notification emails.
+    - Returns: Dictionary with lists of 'successes' and 'failures'.
 
 ### Resources
 
@@ -81,7 +102,7 @@ The server requires some setup in Google Cloud Platform and choosing an authenti
 
 You can use one of two authentication methods:
 
-#### Method 1: Service Account Authentication (Recommended, Non-interactive)
+#### Method 1: Service Account Authentication (Recommended)
 
 Service accounts provide headless authentication without browser prompts, ideal for automated or server environments. Benefits include:
 - No browser interaction needed for authentication
@@ -177,9 +198,11 @@ uv run mcp-google-sheets
 The server automatically selects the authentication method based on environment variables:
 
 1. First, it checks for service account credentials (non-interactive)
-2. If service account authentication fails or isn't configured, it falls back to OAuth flow
+   - It prioritizes `CREDENTIALS_CONFIG` if set.
+   - If `CREDENTIALS_CONFIG` is not set, it checks for `SERVICE_ACCOUNT_PATH`.
+2. If service account authentication fails or isn't configured, it falls back to OAuth flow using `CREDENTIALS_PATH` and `TOKEN_PATH`.
 
-With service account authentication, no browser interaction is needed, and the server will directly operate on spreadsheets in the shared Google Drive folder.
+With service account authentication, no browser interaction is needed, and the server will directly operate on spreadsheets in the shared Google Drive folder (specified by `DRIVE_FOLDER_ID`).
 
 With OAuth authentication, the first time you use the server, it will open a browser window to authenticate with your Google account. After authentication, a token will be saved in the location specified by the `TOKEN_PATH` environment variable.
 
@@ -258,8 +281,9 @@ Once the MCP server is connected to Claude, you can use prompts like these:
 - "Add 3 rows to the beginning of Sheet2 in my spreadsheet"
 - "Update cells A1:B2 in my spreadsheet with the values [[1, 2], [3, 4]]"
 - "List all the sheets in my Budget spreadsheet"
-- "Copy the 'March' sheet from my Q1 spreadsheet to my Annual spreadsheet and rename it to 'Q1-March'"
-- "Add a new sheet named 'Q4' to my Annual Budget spreadsheet"
+- "Get a summary of my 'Project Tracker' and 'Team Roster' spreadsheets"
+- "Fetch the first 10 rows from 'Tasks!A1:E10' in spreadsheet 'proj-abc' and the range 'Sheet1!B2:B' from spreadsheet 'roster-xyz'"
+- "Share my 'Q3 Planning' spreadsheet with user1@example.com as writer and user2@example.com as reader"
 
 ## License
 
