@@ -23,6 +23,9 @@ email = "xingwu.cs@gmail.com"
 requires = ["hatchling", "uv-dynamic-versioning"]
 build-backend = "hatchling.build"
 
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+
 [tool.uv-dynamic-versioning]
 pattern = "v(?P<version>\\d+\\.\\d+\\.\\d+)"
 strict = true
