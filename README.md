@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/xing5-mcp-google-sheets-badge.png)](https://mseep.ai/app/xing5-mcp-google-sheets)
+
 
 <div align="center">
   <!-- Main Title Link -->
