@@ -106,7 +106,7 @@ mcp = FastMCP("Google Spreadsheet",
 @mcp.tool()
 def get_sheet_data(spreadsheet_id: str, 
                    sheet: str,
-                   range: Optional[str] = None,
+                   cell_range: Optional[str] = None,
                    ctx: Context = None) -> List[List[Any]]:
     """
     Get data from a specific sheet in a Google Spreadsheet.
@@ -114,28 +114,44 @@ def get_sheet_data(spreadsheet_id: str,
     Args:
         spreadsheet_id: The ID of the spreadsheet (found in the URL)
         sheet: The name of the sheet
-        range: Optional cell range in A1 notation (e.g., 'A1:C10'). If not provided, gets all data.
+        cell_range: Optional cell range in A1 notation (e.g., 'A1:C10'). If not provided, gets all data.
     
     Returns:
         A 2D array of the sheet data
     """
     sheets_service = ctx.request_context.lifespan_context.sheets_service
     
-    # Construct the range
-    if range:
-        full_range = f"{sheet}!{range}"
-    else:
-        full_range = sheet
-    
-    # Call the Sheets API
-    result = sheets_service.spreadsheets().values().get(
-        spreadsheetId=spreadsheet_id,
-        range=full_range
-    ).execute()
-    
-    # Get the values from the response
-    values = result.get('values', [])
-    return values
+    try : 
+        # Construct the range
+        full_range = f"{sheet}!{cell_range}" if cell_range else sheet
+        
+        # Call the Sheets API
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range=full_range
+        ).execute()
+
+        values = result.get('values', [])
+        
+        if not values or len(values) < 2:
+            return []  # No data or only headers present
+
+        headers = values[0]
+        rows = values[1:]
+
+        structured = []
+        for row in rows:
+            row_dict = {}
+            for i in range(len(headers)):
+                key = headers[i]
+                value = row[i] if i < len(row) else None
+                row_dict[key] = value
+            structured.append(row_dict)
+
+        return structured
+
+    except Exception as e:
+        return values
 
 
 @mcp.tool()
