@@ -137,6 +137,40 @@ def get_sheet_data(spreadsheet_id: str,
     values = result.get('values', [])
     return values
 
+@mcp.tool()
+def get_sheet_formulas(spreadsheet_id: str,
+                       sheet: str,
+                       range: Optional[str] = None,
+                       ctx: Context = None) -> List[List[Any]]:
+    """
+    Get formulas from a specific sheet in a Google Spreadsheet.
+    
+    Args:
+        spreadsheet_id: The ID of the spreadsheet (found in the URL)
+        sheet: The name of the sheet
+        range: Optional cell range in A1 notation (e.g., 'A1:C10'). If not provided, gets all formulas from the sheet.
+    
+    Returns:
+        A 2D array of the sheet formulas.
+    """
+    sheets_service = ctx.request_context.lifespan_context.sheets_service
+    
+    # Construct the range
+    if range:
+        full_range = f"{sheet}!{range}"
+    else:
+        full_range = sheet  # Get all formulas in the specified sheet
+    
+    # Call the Sheets API
+    result = sheets_service.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=full_range,
+        valueRenderOption='FORMULA'  # Request formulas
+    ).execute()
+    
+    # Get the formulas from the response
+    formulas = result.get('values', [])
+    return formulas
 
 @mcp.tool()
 def update_cells(spreadsheet_id: str,
