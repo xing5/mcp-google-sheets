@@ -226,19 +226,37 @@ The server needs credentials to access Google APIs. Choose one method:
             export CREDENTIALS_CONFIG="ewogICJ0eXBlIjogInNlcnZpY2VfYWNjb..."
             ```
 
+### Method D: Application Default Credentials (ADC) 🌐
+
+*   **Why?** Ideal for Google Cloud environments (GKE, Compute Engine, Cloud Run) and local development with `gcloud auth application-default login`. No explicit credential files needed.
+*   **How?** Uses Google's Application Default Credentials chain to automatically discover credentials from multiple sources.
+*   **ADC Search Order:**
+    1.  `GOOGLE_APPLICATION_CREDENTIALS` environment variable (path to service account key) - **Google's standard variable**
+    2.  `gcloud auth application-default login` credentials (local development)
+    3.  Attached service account from metadata server (GKE, Compute Engine, etc.)
+*   **Setup:**
+    *   **Local Development:** Run `gcloud auth application-default login` once
+    *   **Google Cloud:** Attach a service account to your compute resource
+    *   **Environment Variable:** Set `GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json` (Google's standard)
+*   **No additional environment variables needed** - ADC is used automatically as a fallback when other methods fail.
+
+**Note:** `GOOGLE_APPLICATION_CREDENTIALS` is Google's official standard environment variable, while `SERVICE_ACCOUNT_PATH` is specific to this MCP server. If you set `GOOGLE_APPLICATION_CREDENTIALS`, ADC will find it automatically.
+
 ### Authentication Priority & Summary
 
 The server checks for credentials in this order:
 
 1.  `CREDENTIALS_CONFIG` (Base64 content)
 2.  `SERVICE_ACCOUNT_PATH` (Path to Service Account JSON)
-3.  `CREDENTIALS_PATH` (Path to OAuth JSON) - triggers interactive flow if token is missing/expired.
+3.  `CREDENTIALS_PATH` (Path to OAuth JSON) - triggers interactive flow if token is missing/expired
+4.  **Application Default Credentials (ADC)** - automatic fallback
 
 **Environment Variable Summary:**
 
 | Variable               | Method(s)                   | Description                                                     | Default          |
 | :--------------------- | :-------------------------- | :-------------------------------------------------------------- | :--------------- |
-| `SERVICE_ACCOUNT_PATH` | Service Account             | Path to the Service Account JSON key file.                      | -                |
+| `SERVICE_ACCOUNT_PATH` | Service Account             | Path to the Service Account JSON key file (MCP server specific). | -                |
+| `GOOGLE_APPLICATION_CREDENTIALS` | ADC                   | Path to service account key (Google's standard variable).       | -                |
 | `DRIVE_FOLDER_ID`      | Service Account             | ID of the Google Drive folder shared with the Service Account.  | -                |
 | `CREDENTIALS_PATH`     | OAuth 2.0                   | Path to the OAuth 2.0 Client ID JSON file.                    | `credentials.json` |
 | `TOKEN_PATH`           | OAuth 2.0                   | Path to store the generated OAuth token.                        | `token.json`     |
@@ -338,6 +356,29 @@ Add the server config to `claude_desktop_config.json` under `mcpServers`. Choose
   }
 }
 ```
+</details>
+
+<details>
+<summary>🔵 Config: uvx + Application Default Credentials (ADC)</summary>
+
+```json
+{
+  "mcpServers": {
+    "google-sheets": {
+      "command": "uvx",
+      "args": ["mcp-google-sheets"],
+      "env": {
+        // Option 1: Use Google's standard environment variable
+        // "GOOGLE_APPLICATION_CREDENTIALS": "/path/to/service-account.json"
+        
+        // Option 2: No env vars needed if using `gcloud auth application-default login`
+      },
+      "healthcheck_url": "http://localhost:8000/health"
+    }
+  }
+}
+```
+*Prerequisites: Either set `GOOGLE_APPLICATION_CREDENTIALS` OR run `gcloud auth application-default login`*
 </details>
 
 <details>
