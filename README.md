@@ -387,22 +387,23 @@ Add the server config to `claude_desktop_config.json` under `mcpServers`. Choose
 ```json
 {
   "mcpServers": {
-    "mcp-google-sheets-dev": { // Use a distinct name
+    "mcp-google-sheets-local": {
       "command": "uv",
-      "args": ["run", "mcp-google-sheets"], // Assumes `mcp-google-sheets` script exists
-      "cwd": "/full/path/to/cloned/mcp-google-sheets", // ABSOLUTE path to repo
+      "args": [
+        "run",
+        "--directory",
+        "/path/to/your/mcp-google-sheets",
+        "mcp-google-sheets"
+      ],
       "env": {
-        // Choose ONE auth method and set corresponding vars
-        // Example: Service Account Path
-        "SERVICE_ACCOUNT_PATH": "/full/path/to/cloned/mcp-google-sheets/service-account-key.json",
-        "DRIVE_FOLDER_ID": "your_shared_folder_id_here"
-      },
-      "healthcheck_url": "http://localhost:8000/health",
-      "disabled": false
+        "SERVICE_ACCOUNT_PATH": "/path/to/your/mcp-google-sheets/service_account.json",
+        "DRIVE_FOLDER_ID": "your_drive_folder_id_here"
+      }
     }
   }
 }
 ```
+*Note: Use `--directory` flag to specify the project path, and adjust paths to match your actual workspace location.*
 </details>
 
 ---
