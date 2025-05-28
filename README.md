@@ -104,7 +104,7 @@ This server exposes the following tools for interacting with Google Sheets:
     *   `spreadsheet_id` (string)
     *   `sheet` (string): Name of the sheet.
     *   `range` (optional string): A1 notation (e.g., `'A1:C10'`, `'Sheet1!B2:D'`). If omitted, reads the whole sheet.
-    *   _Returns:_ 2D array of cell values.
+    *   _Returns:_ Full grid data structure from Google Sheets API with all metadata preserved.
 *   **`get_sheet_formulas`**: Reads formulas from a range in a sheet.
     *   `spreadsheet_id` (string)
     *   `sheet` (string): Name of the sheet.
