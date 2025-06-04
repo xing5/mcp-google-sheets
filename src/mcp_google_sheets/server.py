@@ -275,56 +275,34 @@ def batch_update_cells(spreadsheet_id: str,
 @mcp.tool()
 def add_rows(spreadsheet_id: str,
              sheet: str,
-             count: int,
-             start_row: Optional[int] = None,
+             data: List[List[Any]],
              ctx: Context = None) -> Dict[str, Any]:
     """
-    Add rows to a sheet in a Google Spreadsheet.
+    Append rows with data to the end of a sheet in a Google Spreadsheet.
     
     Args:
         spreadsheet_id: The ID of the spreadsheet (found in the URL)
         sheet: The name of the sheet
-        count: Number of rows to add
-        start_row: 0-based row index to start adding. If not provided, adds at the end.
+        data: 2D array of values to append as new rows
     
     Returns:
-        Result of the operation
+        Result of the append operation
     """
     sheets_service = ctx.request_context.lifespan_context.sheets_service
     
-    # Get sheet ID
-    spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-    sheet_id = None
-    
-    for s in spreadsheet['sheets']:
-        if s['properties']['title'] == sheet:
-            sheet_id = s['properties']['sheetId']
-            break
-            
-    if sheet_id is None:
-        return {"error": f"Sheet '{sheet}' not found"}
-    
-    # Prepare the insert rows request
-    request_body = {
-        "requests": [
-            {
-                "insertDimension": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "dimension": "ROWS",
-                        "startIndex": start_row if start_row is not None else 0,
-                        "endIndex": (start_row if start_row is not None else 0) + count
-                    },
-                    "inheritFromBefore": start_row is not None and start_row > 0
-                }
-            }
-        ]
+    # Use the values().append API which is designed for appending data
+    # This automatically finds the last row with data and appends after it
+    value_range_body = {
+        'values': data
     }
     
-    # Execute the request
-    result = sheets_service.spreadsheets().batchUpdate(
+    # Call the Sheets API to append values
+    result = sheets_service.spreadsheets().values().append(
         spreadsheetId=spreadsheet_id,
-        body=request_body
+        range=f"{sheet}!A:A",  # Use column A as the starting point
+        valueInputOption='USER_ENTERED',
+        insertDataOption='INSERT_ROWS',  # Insert new rows for the data
+        body=value_range_body
     ).execute()
     
     return result
