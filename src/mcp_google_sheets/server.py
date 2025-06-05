@@ -126,7 +126,7 @@ mcp = FastMCP("Google Spreadsheet",
 def get_sheet_data(spreadsheet_id: str, 
                    sheet: str,
                    range: Optional[str] = None,
-                   ctx: Context = None) -> Dict[str, Any]:
+                   ctx: Context = None) -> List[List[Any]]:
     """
     Get data from a specific sheet in a Google Spreadsheet.
     
@@ -136,25 +136,27 @@ def get_sheet_data(spreadsheet_id: str,
         range: Optional cell range in A1 notation (e.g., 'A1:C10'). If not provided, gets all data.
     
     Returns:
-        Grid data structure with full metadata from Google Sheets API
+        A 2D array of the sheet values
     """
     sheets_service = ctx.request_context.lifespan_context.sheets_service
     
-    # Construct the range - keep original API behavior
+    # Construct the range using proper A1 notation
     if range:
         full_range = f"{sheet}!{range}"
     else:
-        full_range = sheet
+        # Use proper A1 notation for entire sheet instead of just sheet name
+        full_range = f"{sheet}!A:Z"  # Get all columns from A to Z
     
-    # Use includeGridData to preserve empty cells and structure
-    result = sheets_service.spreadsheets().get(
+    # Call the Sheets API with proper A1 notation and default formatting
+    result = sheets_service.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
-        ranges=[full_range],
-        includeGridData=True
+        range=full_range,
+        valueRenderOption='UNFORMATTED_VALUE'  # Bypass formatting issues
     ).execute()
     
-    # Return the grid data as-is, preserving all Google's metadata
-    return result
+    # Get the values from the response - same as get_sheet_formulas
+    values = result.get('values', [])
+    return values
 
 @mcp.tool()
 def get_sheet_formulas(spreadsheet_id: str,
