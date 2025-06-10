@@ -909,6 +909,55 @@ def share_spreadsheet(spreadsheet_id: str,
             
     return {"successes": successes, "failures": failures}
 
+
+@mcp.tool()
+def delete_spreadsheet(spreadsheet_id: str, ctx: Context = None) -> Dict[str, Any]:
+    """
+    Permanently delete a Google Spreadsheet.
+    
+    WARNING: This action is irreversible and will permanently delete the spreadsheet.
+    
+    Args:
+        spreadsheet_id: The ID of the spreadsheet to delete (found in the URL)
+    
+    Returns:
+        Result of the delete operation
+    """
+    drive_service = ctx.request_context.lifespan_context.drive_service
+    
+    try:
+        # First, verify the file exists and is a spreadsheet
+        file_info = drive_service.files().get(
+            fileId=spreadsheet_id,
+            fields='id,name,mimeType'
+        ).execute()
+        
+        # Check if it's actually a Google Sheets file
+        if file_info.get('mimeType') != 'application/vnd.google-apps.spreadsheet':
+            return {
+                "error": f"File {spreadsheet_id} is not a Google Spreadsheet",
+                "mimeType": file_info.get('mimeType')
+            }
+        
+        # Perform the deletion
+        drive_service.files().delete(fileId=spreadsheet_id).execute()
+        
+        return {
+            "success": True,
+            "spreadsheet_id": spreadsheet_id,
+            "name": file_info.get('name'),
+            "message": f"Spreadsheet '{file_info.get('name')}' has been permanently deleted"
+        }
+        
+    except Exception as e:
+        return {
+            "error": f"Failed to delete spreadsheet: {str(e)}",
+            "spreadsheet_id": spreadsheet_id
+        }
+
 def main():
     # Run the server
     mcp.run()
+
+if __name__ == "__main__":
+    main()
