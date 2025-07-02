@@ -285,7 +285,7 @@ def add_rows(spreadsheet_id: str,
         spreadsheet_id: The ID of the spreadsheet (found in the URL)
         sheet: The name of the sheet
         count: Number of rows to add
-        start_row: 0-based row index to start adding. If not provided, adds at the end.
+        start_row: 0-based row index to start adding. If not provided, adds at the beginning.
     
     Returns:
         Result of the operation
@@ -343,7 +343,7 @@ def add_columns(spreadsheet_id: str,
         spreadsheet_id: The ID of the spreadsheet (found in the URL)
         sheet: The name of the sheet
         count: Number of columns to add
-        start_column: 0-based column index to start adding. If not provided, adds at the end.
+        start_column: 0-based column index to start adding. If not provided, adds at the beginning.
     
     Returns:
         Result of the operation
