@@ -56,15 +56,11 @@ async def spreadsheet_lifespan(server: FastMCP) -> AsyncIterator[SpreadsheetCont
                 SERVICE_ACCOUNT_PATH,
                 scopes=SCOPES
             )
-            print("Using service account authentication")
-            print(f"Working with Google Drive folder ID: {DRIVE_FOLDER_ID or 'Not specified'}")
         except Exception as e:
-            print(f"Error using service account authentication: {e}")
             creds = None
     
     # Fall back to OAuth flow if service account auth failed or not configured
     if not creds:
-        print("Trying OAuth authentication flow")
         if os.path.exists(TOKEN_PATH):
             with open(TOKEN_PATH, 'r') as token:
                 creds = Credentials.from_authorized_user_info(json.load(token), SCOPES)
@@ -81,23 +77,17 @@ async def spreadsheet_lifespan(server: FastMCP) -> AsyncIterator[SpreadsheetCont
                     # Save the credentials for the next run
                     with open(TOKEN_PATH, 'w') as token:
                         token.write(creds.to_json())
-                    print("Successfully authenticated using OAuth flow")
                 except Exception as e:
-                    print(f"Error with OAuth flow: {e}")
                     creds = None
     
     # Try Application Default Credentials if no creds thus far
     # This will automatically check GOOGLE_APPLICATION_CREDENTIALS, gcloud auth, and metadata service
     if not creds:
         try:
-            print("Attempting to use Application Default Credentials (ADC)")
-            print("ADC will check: GOOGLE_APPLICATION_CREDENTIALS, gcloud auth, and metadata service")
             creds, project = google.auth.default(
                 scopes=SCOPES
             )
-            print(f"Successfully authenticated using ADC for project: {project}")
         except Exception as e:
-            print(f"Error using Application Default Credentials: {e}")
             raise Exception("All authentication methods failed. Please configure credentials.")
     
     # Build the services
@@ -126,7 +116,7 @@ mcp = FastMCP("Google Spreadsheet",
 def get_sheet_data(spreadsheet_id: str, 
                    sheet: str,
                    range: Optional[str] = None,
-                   ctx: Context = None) -> Dict[str, Any]:
+                   ctx: Context = None) -> List[List[Any]]:
     """
     Get data from a specific sheet in a Google Spreadsheet.
     
@@ -136,25 +126,27 @@ def get_sheet_data(spreadsheet_id: str,
         range: Optional cell range in A1 notation (e.g., 'A1:C10'). If not provided, gets all data.
     
     Returns:
-        Grid data structure with full metadata from Google Sheets API
+        A 2D array of the sheet values
     """
     sheets_service = ctx.request_context.lifespan_context.sheets_service
     
-    # Construct the range - keep original API behavior
+    # Construct the range using proper A1 notation
     if range:
         full_range = f"{sheet}!{range}"
     else:
-        full_range = sheet
+        # Use proper A1 notation for entire sheet instead of just sheet name
+        full_range = f"{sheet}!A:Z"  # Get all columns from A to Z
     
-    # Use includeGridData to preserve empty cells and structure
-    result = sheets_service.spreadsheets().get(
+    # Call the Sheets API with proper A1 notation and default formatting
+    result = sheets_service.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
-        ranges=[full_range],
-        includeGridData=True
+        range=full_range,
+        valueRenderOption='UNFORMATTED_VALUE'  # Bypass formatting issues
     ).execute()
     
-    # Return the grid data as-is, preserving all Google's metadata
-    return result
+    # Get the values from the response - same as get_sheet_formulas
+    values = result.get('values', [])
+    return values
 
 @mcp.tool()
 def get_sheet_formulas(spreadsheet_id: str,
@@ -275,56 +267,34 @@ def batch_update_cells(spreadsheet_id: str,
 @mcp.tool()
 def add_rows(spreadsheet_id: str,
              sheet: str,
-             count: int,
-             start_row: Optional[int] = None,
+             data: List[List[Any]],
              ctx: Context = None) -> Dict[str, Any]:
     """
-    Add rows to a sheet in a Google Spreadsheet.
+    Append rows with data to the end of a sheet in a Google Spreadsheet.
     
     Args:
         spreadsheet_id: The ID of the spreadsheet (found in the URL)
         sheet: The name of the sheet
-        count: Number of rows to add
-        start_row: 0-based row index to start adding. If not provided, adds at the end.
+        data: 2D array of values to append as new rows
     
     Returns:
-        Result of the operation
+        Result of the append operation
     """
     sheets_service = ctx.request_context.lifespan_context.sheets_service
     
-    # Get sheet ID
-    spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-    sheet_id = None
-    
-    for s in spreadsheet['sheets']:
-        if s['properties']['title'] == sheet:
-            sheet_id = s['properties']['sheetId']
-            break
-            
-    if sheet_id is None:
-        return {"error": f"Sheet '{sheet}' not found"}
-    
-    # Prepare the insert rows request
-    request_body = {
-        "requests": [
-            {
-                "insertDimension": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "dimension": "ROWS",
-                        "startIndex": start_row if start_row is not None else 0,
-                        "endIndex": (start_row if start_row is not None else 0) + count
-                    },
-                    "inheritFromBefore": start_row is not None and start_row > 0
-                }
-            }
-        ]
+    # Use the values().append API which is designed for appending data
+    # This automatically finds the last row with data and appends after it
+    value_range_body = {
+        'values': data
     }
     
-    # Execute the request
-    result = sheets_service.spreadsheets().batchUpdate(
+    # Call the Sheets API to append values
+    result = sheets_service.spreadsheets().values().append(
         spreadsheetId=spreadsheet_id,
-        body=request_body
+        range=f"{sheet}!A:A",  # Use column A as the starting point
+        valueInputOption='USER_ENTERED',
+        insertDataOption='INSERT_ROWS',  # Insert new rows for the data
+        body=value_range_body
     ).execute()
     
     return result
@@ -738,7 +708,6 @@ def create_spreadsheet(title: str, ctx: Context = None) -> Dict[str, Any]:
     ).execute()
     
     spreadsheet_id = spreadsheet.get('spreadsheetId')
-    print(f"Spreadsheet created with ID: {spreadsheet_id}")
     
     # If a folder_id is specified, move the spreadsheet to that folder
     if folder_id:
@@ -759,9 +728,8 @@ def create_spreadsheet(title: str, ctx: Context = None) -> Dict[str, Any]:
                 fields='id, parents'
             ).execute()
             
-            print(f"Spreadsheet moved to folder with ID: {folder_id}")
         except Exception as e:
-            print(f"Warning: Could not move spreadsheet to folder: {e}")
+            pass
     
     return {
         'spreadsheetId': spreadsheet_id,
@@ -834,9 +802,6 @@ def list_spreadsheets(ctx: Context = None) -> List[Dict[str, str]]:
     # If a specific folder is configured, search only in that folder
     if folder_id:
         query += f" and '{folder_id}' in parents"
-        print(f"Searching for spreadsheets in folder: {folder_id}")
-    else:
-        print("Searching for spreadsheets in 'My Drive'")
     
     # List spreadsheets
     results = drive_service.files().list(
@@ -929,6 +894,55 @@ def share_spreadsheet(spreadsheet_id: str,
             
     return {"successes": successes, "failures": failures}
 
+
+@mcp.tool()
+def delete_spreadsheet(spreadsheet_id: str, ctx: Context = None) -> Dict[str, Any]:
+    """
+    Permanently delete a Google Spreadsheet.
+    
+    WARNING: This action is irreversible and will permanently delete the spreadsheet.
+    
+    Args:
+        spreadsheet_id: The ID of the spreadsheet to delete (found in the URL)
+    
+    Returns:
+        Result of the delete operation
+    """
+    drive_service = ctx.request_context.lifespan_context.drive_service
+    
+    try:
+        # First, verify the file exists and is a spreadsheet
+        file_info = drive_service.files().get(
+            fileId=spreadsheet_id,
+            fields='id,name,mimeType'
+        ).execute()
+        
+        # Check if it's actually a Google Sheets file
+        if file_info.get('mimeType') != 'application/vnd.google-apps.spreadsheet':
+            return {
+                "error": f"File {spreadsheet_id} is not a Google Spreadsheet",
+                "mimeType": file_info.get('mimeType')
+            }
+        
+        # Perform the deletion
+        drive_service.files().delete(fileId=spreadsheet_id).execute()
+        
+        return {
+            "success": True,
+            "spreadsheet_id": spreadsheet_id,
+            "name": file_info.get('name'),
+            "message": f"Spreadsheet '{file_info.get('name')}' has been permanently deleted"
+        }
+        
+    except Exception as e:
+        return {
+            "error": f"Failed to delete spreadsheet: {str(e)}",
+            "spreadsheet_id": spreadsheet_id
+        }
+
 def main():
     # Run the server
     mcp.run()
+
+if __name__ == "__main__":
+    main()
