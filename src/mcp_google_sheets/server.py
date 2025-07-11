@@ -56,15 +56,11 @@ async def spreadsheet_lifespan(server: FastMCP) -> AsyncIterator[SpreadsheetCont
                 SERVICE_ACCOUNT_PATH,
                 scopes=SCOPES
             )
-            print("Using service account authentication")
-            print(f"Working with Google Drive folder ID: {DRIVE_FOLDER_ID or 'Not specified'}")
         except Exception as e:
-            print(f"Error using service account authentication: {e}")
             creds = None
     
     # Fall back to OAuth flow if service account auth failed or not configured
     if not creds:
-        print("Trying OAuth authentication flow")
         if os.path.exists(TOKEN_PATH):
             with open(TOKEN_PATH, 'r') as token:
                 creds = Credentials.from_authorized_user_info(json.load(token), SCOPES)
@@ -81,23 +77,17 @@ async def spreadsheet_lifespan(server: FastMCP) -> AsyncIterator[SpreadsheetCont
                     # Save the credentials for the next run
                     with open(TOKEN_PATH, 'w') as token:
                         token.write(creds.to_json())
-                    print("Successfully authenticated using OAuth flow")
                 except Exception as e:
-                    print(f"Error with OAuth flow: {e}")
                     creds = None
     
     # Try Application Default Credentials if no creds thus far
     # This will automatically check GOOGLE_APPLICATION_CREDENTIALS, gcloud auth, and metadata service
     if not creds:
         try:
-            print("Attempting to use Application Default Credentials (ADC)")
-            print("ADC will check: GOOGLE_APPLICATION_CREDENTIALS, gcloud auth, and metadata service")
             creds, project = google.auth.default(
                 scopes=SCOPES
             )
-            print(f"Successfully authenticated using ADC for project: {project}")
         except Exception as e:
-            print(f"Error using Application Default Credentials: {e}")
             raise Exception("All authentication methods failed. Please configure credentials.")
     
     # Build the services
@@ -718,7 +708,6 @@ def create_spreadsheet(title: str, ctx: Context = None) -> Dict[str, Any]:
     ).execute()
     
     spreadsheet_id = spreadsheet.get('spreadsheetId')
-    print(f"Spreadsheet created with ID: {spreadsheet_id}")
     
     # If a folder_id is specified, move the spreadsheet to that folder
     if folder_id:
@@ -739,9 +728,8 @@ def create_spreadsheet(title: str, ctx: Context = None) -> Dict[str, Any]:
                 fields='id, parents'
             ).execute()
             
-            print(f"Spreadsheet moved to folder with ID: {folder_id}")
         except Exception as e:
-            print(f"Warning: Could not move spreadsheet to folder: {e}")
+            pass
     
     return {
         'spreadsheetId': spreadsheet_id,
@@ -814,9 +802,6 @@ def list_spreadsheets(ctx: Context = None) -> List[Dict[str, str]]:
     # If a specific folder is configured, search only in that folder
     if folder_id:
         query += f" and '{folder_id}' in parents"
-        print(f"Searching for spreadsheets in folder: {folder_id}")
-    else:
-        print("Searching for spreadsheets in 'My Drive'")
     
     # List spreadsheets
     results = drive_service.files().list(
