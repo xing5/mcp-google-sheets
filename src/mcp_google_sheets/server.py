@@ -126,6 +126,7 @@ mcp = FastMCP("Google Spreadsheet",
 def get_sheet_data(spreadsheet_id: str, 
                    sheet: str,
                    range: Optional[str] = None,
+                   include_grid_data: bool = False,
                    ctx: Context = None) -> Dict[str, Any]:
     """
     Get data from a specific sheet in a Google Spreadsheet.
@@ -134,26 +135,39 @@ def get_sheet_data(spreadsheet_id: str,
         spreadsheet_id: The ID of the spreadsheet (found in the URL)
         sheet: The name of the sheet
         range: Optional cell range in A1 notation (e.g., 'A1:C10'). If not provided, gets all data.
+        include_grid_data: If True, includes cell formatting and other metadata in the response.
+            Note: Setting this to True will significantly increase the response size and token usage
+            when parsing the response, as it includes detailed cell formatting information.
+            Default is False (returns values only, more efficient).
     
     Returns:
-        Grid data structure with full metadata from Google Sheets API
+        Grid data structure with either full metadata or just values from Google Sheets API, depending on include_grid_data parameter
     """
     sheets_service = ctx.request_context.lifespan_context.sheets_service
-    
+
     # Construct the range - keep original API behavior
     if range:
         full_range = f"{sheet}!{range}"
     else:
         full_range = sheet
     
-    # Use includeGridData to preserve empty cells and structure
+    # Use the full API to get all grid data including formatting then includeGridData=True
+    # Use the only cell values when includeGridData=False
     result = sheets_service.spreadsheets().get(
         spreadsheetId=spreadsheet_id,
         ranges=[full_range],
-        includeGridData=True
+        includeGridData=include_grid_data
     ).execute()
     
-    # Return the grid data as-is, preserving all Google's metadata
+    if not include_grid_data:
+        # Transform the result to match the expected structure
+        result = {
+            'spreadsheetId': spreadsheet_id,
+            'valueRanges': [{
+                'range': full_range,
+                'values': result.get('values', [])}]
+        }
+
     return result
 
 @mcp.tool()
