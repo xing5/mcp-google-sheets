@@ -12,6 +12,8 @@
 [![PyPI - Downloads](https://img.shields.io/pypi/dm/mcp-google-sheets)](https://pypi.org/project/mcp-google-sheets/)
 ![GitHub License](https://img.shields.io/github/license/xing5/mcp-google-sheets)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/xing5/mcp-google-sheets/release.yml)
+
+[![Trust Score](https://archestra.ai/mcp-catalog/api/badge/quality/xing5/mcp-google-sheets)](https://archestra.ai/mcp-catalog/xing5__mcp-google-sheets)
 </div>
 
 ---
