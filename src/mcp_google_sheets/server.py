@@ -734,54 +734,31 @@ def create_spreadsheet(title: str, ctx: Context = None) -> Dict[str, Any]:
     Returns:
         Information about the newly created spreadsheet including its ID
     """
-    sheets_service = ctx.request_context.lifespan_context.sheets_service
     drive_service = ctx.request_context.lifespan_context.drive_service
     folder_id = ctx.request_context.lifespan_context.folder_id
-    
-    # Create the spreadsheet using Sheets API
-    spreadsheet_body = {
-        'properties': {
-            'title': title
-        }
-    }
-    
+
     # Create the spreadsheet
-    spreadsheet = sheets_service.spreadsheets().create(
-        body=spreadsheet_body, 
-        fields='spreadsheetId,properties,sheets'
-    ).execute()
-    
-    spreadsheet_id = spreadsheet.get('spreadsheetId')
-    print(f"Spreadsheet created with ID: {spreadsheet_id}")
-    
-    # If a folder_id is specified, move the spreadsheet to that folder
+    file_body = {
+        'name': title,
+        'mimeType': 'application/vnd.google-apps.spreadsheet',
+    }
     if folder_id:
-        try:
-            # Get the current parents
-            file = drive_service.files().get(
-                fileId=spreadsheet_id, 
-                fields='parents'
-            ).execute()
-            
-            previous_parents = ",".join(file.get('parents', []))
-            
-            # Move the file to the specified folder
-            drive_service.files().update(
-                fileId=spreadsheet_id,
-                addParents=folder_id,
-                removeParents=previous_parents,
-                fields='id, parents'
-            ).execute()
-            
-            print(f"Spreadsheet moved to folder with ID: {folder_id}")
-        except Exception as e:
-            print(f"Warning: Could not move spreadsheet to folder: {e}")
+        file_body['parents'] = [folder_id]
     
+    spreadsheet = drive_service.files().create(
+        supportsAllDrives=True,
+        body=file_body,
+        fields='id, name, parents'
+    ).execute()
+
+    spreadsheet_id = spreadsheet.get('id')
+    parents = spreadsheet.get('parents')
+    print(f"Spreadsheet created with ID: {spreadsheet_id}")
+
     return {
         'spreadsheetId': spreadsheet_id,
-        'title': spreadsheet.get('properties', {}).get('title', title),
-        'sheets': [sheet.get('properties', {}).get('title', 'Sheet1') for sheet in spreadsheet.get('sheets', [])],
-        'folder': folder_id if folder_id else 'root'
+        'title': spreadsheet.get('name', title),
+        'folder': parents[0] if parents else 'root',
     }
 
 
@@ -856,6 +833,8 @@ def list_spreadsheets(ctx: Context = None) -> List[Dict[str, str]]:
     results = drive_service.files().list(
         q=query,
         spaces='drive',
+        includeItemsFromAllDrives=True,
+        supportsAllDrives=True,
         fields='files(id, name)',
         orderBy='modifiedTime desc'
     ).execute()
