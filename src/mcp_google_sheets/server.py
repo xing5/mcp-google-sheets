@@ -724,26 +724,29 @@ def get_spreadsheet_info(spreadsheet_id: str) -> str:
 
 
 @mcp.tool()
-def create_spreadsheet(title: str, ctx: Context = None) -> Dict[str, Any]:
+def create_spreadsheet(title: str, folder_id: Optional[str] = None, ctx: Context = None) -> Dict[str, Any]:
     """
     Create a new Google Spreadsheet.
     
     Args:
         title: The title of the new spreadsheet
+        folder_id: Optional Google Drive folder ID where the spreadsheet should be created.
+                  If not provided, uses the configured default folder or creates in root.
     
     Returns:
         Information about the newly created spreadsheet including its ID
     """
     drive_service = ctx.request_context.lifespan_context.drive_service
-    folder_id = ctx.request_context.lifespan_context.folder_id
+    # Use provided folder_id or fall back to configured default
+    target_folder_id = folder_id or ctx.request_context.lifespan_context.folder_id
 
     # Create the spreadsheet
     file_body = {
         'name': title,
         'mimeType': 'application/vnd.google-apps.spreadsheet',
     }
-    if folder_id:
-        file_body['parents'] = [folder_id]
+    if target_folder_id:
+        file_body['parents'] = [target_folder_id]
     
     spreadsheet = drive_service.files().create(
         supportsAllDrives=True,
@@ -753,7 +756,8 @@ def create_spreadsheet(title: str, ctx: Context = None) -> Dict[str, Any]:
 
     spreadsheet_id = spreadsheet.get('id')
     parents = spreadsheet.get('parents')
-    print(f"Spreadsheet created with ID: {spreadsheet_id}")
+    folder_info = f" in folder {target_folder_id}" if target_folder_id else " in root"
+    print(f"Spreadsheet created with ID: {spreadsheet_id}{folder_info}")
 
     return {
         'spreadsheetId': spreadsheet_id,
@@ -809,23 +813,28 @@ def create_sheet(spreadsheet_id: str,
 
 
 @mcp.tool()
-def list_spreadsheets(ctx: Context = None) -> List[Dict[str, str]]:
+def list_spreadsheets(folder_id: Optional[str] = None, ctx: Context = None) -> List[Dict[str, str]]:
     """
-    List all spreadsheets in the configured Google Drive folder.
-    If no folder is configured, lists spreadsheets from 'My Drive'.
+    List all spreadsheets in the specified Google Drive folder.
+    If no folder is specified, uses the configured default folder or lists from 'My Drive'.
+    
+    Args:
+        folder_id: Optional Google Drive folder ID to search in.
+                  If not provided, uses the configured default folder or searches 'My Drive'.
     
     Returns:
         List of spreadsheets with their ID and title
     """
     drive_service = ctx.request_context.lifespan_context.drive_service
-    folder_id = ctx.request_context.lifespan_context.folder_id
+    # Use provided folder_id or fall back to configured default
+    target_folder_id = folder_id or ctx.request_context.lifespan_context.folder_id
     
     query = "mimeType='application/vnd.google-apps.spreadsheet'"
     
-    # If a specific folder is configured, search only in that folder
-    if folder_id:
-        query += f" and '{folder_id}' in parents"
-        print(f"Searching for spreadsheets in folder: {folder_id}")
+    # If a specific folder is provided or configured, search only in that folder
+    if target_folder_id:
+        query += f" and '{target_folder_id}' in parents"
+        print(f"Searching for spreadsheets in folder: {target_folder_id}")
     else:
         print("Searching for spreadsheets in 'My Drive'")
     
