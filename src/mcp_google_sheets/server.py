@@ -931,6 +931,55 @@ def share_spreadsheet(spreadsheet_id: str,
             
     return {"successes": successes, "failures": failures}
 
+
+@mcp.tool()
+def list_folders(parent_folder_id: Optional[str] = None, ctx: Context = None) -> List[Dict[str, str]]:
+    """
+    List all folders in the specified Google Drive folder.
+    If no parent folder is specified, lists folders from 'My Drive' root.
+    
+    Args:
+        parent_folder_id: Optional Google Drive folder ID to search within.
+                         If not provided, searches the root of 'My Drive'.
+    
+    Returns:
+        List of folders with their ID, name, and parent information
+    """
+    drive_service = ctx.request_context.lifespan_context.drive_service
+    
+    query = "mimeType='application/vnd.google-apps.folder'"
+    
+    # If a specific parent folder is provided, search only within that folder
+    if parent_folder_id:
+        query += f" and '{parent_folder_id}' in parents"
+        print(f"Searching for folders in parent folder: {parent_folder_id}")
+    else:
+        # Search in root of My Drive (folders that don't have any parent folders)
+        query += " and 'root' in parents"
+        print("Searching for folders in 'My Drive' root")
+    
+    # List folders
+    results = drive_service.files().list(
+        q=query,
+        spaces='drive',
+        includeItemsFromAllDrives=True,
+        supportsAllDrives=True,
+        fields='files(id, name, parents)',
+        orderBy='name'
+    ).execute()
+    
+    folders = results.get('files', [])
+    
+    return [
+        {
+            'id': folder['id'], 
+            'name': folder['name'],
+            'parent': folder.get('parents', ['root'])[0] if folder.get('parents') else 'root'
+        } 
+        for folder in folders
+    ]
+
+
 def main():
     # Run the server
     mcp.run()
