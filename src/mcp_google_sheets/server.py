@@ -928,6 +928,6 @@ def share_spreadsheet(spreadsheet_id: str,
             
     return {"successes": successes, "failures": failures}
 
-def main():
+async def main():
     # Run the server
     mcp.run()
