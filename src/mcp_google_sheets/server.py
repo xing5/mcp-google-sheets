@@ -930,4 +930,4 @@ def share_spreadsheet(spreadsheet_id: str,
 
 async def main():
     # Run the server
-    mcp.run()
+    await mcp.run_stdio_async()
