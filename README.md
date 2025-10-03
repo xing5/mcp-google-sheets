@@ -84,7 +84,8 @@ You're ready! Start issuing commands via your MCP client.
 ## ✨ Key Features
 
 *   **Seamless Integration:** Connects directly to Google Drive & Google Sheets APIs.
-*   **Comprehensive Tools:** Offers a wide range of operations (CRUD, listing, batching, sharing, formatting, etc.).
+*   **Comprehensive Tools:** Offers a wide range of operations (CRUD, listing, batching, sharing, cell formatting, etc.).
+*   **Cell Formatting:** Apply number formats, colors, text styles, and alignment to spreadsheet cells.
 *   **Flexible Authentication:** Supports **Service Accounts (recommended)**, OAuth 2.0, and direct credential injection via environment variables.
 *   **Easy Deployment:** Run instantly with `uvx` (zero-install feel) or clone for development using `uv`.
 *   **AI-Ready:** Designed for use with MCP-compatible clients, enabling natural language spreadsheet interaction.
@@ -148,6 +149,15 @@ This server exposes the following tools for interacting with Google Sheets:
     *   `recipients` (array of objects): `[{email_address: 'user@example.com', role: 'writer'}, ...]`. Roles: `reader`, `commenter`, `writer`.
     *   `send_notification` (optional boolean, default True): Send email notifications.
     *   _Returns:_ Dictionary with `successes` and `failures` lists.
+*   **`format_cells`**: Apply formatting to cells in a Google Spreadsheet.
+    *   `spreadsheet_id` (string)
+    *   `sheet` (string): Name of the sheet.
+    *   `range` (string): Cell range in A1 notation (e.g., `'A1:C10'` or `'E17'`).
+    *   `number_format` (optional object): Number format with `type` and `pattern` keys. Example: `{'type': 'CURRENCY', 'pattern': '$#,##0.00'}`. Common types: `NUMBER`, `CURRENCY`, `PERCENT`, `DATE`, `TIME`, `TEXT`.
+    *   `background_color` (optional object): Background color with `red`, `green`, `blue` keys (0-1 range). Example: `{'red': 1, 'green': 0.647, 'blue': 0}` for orange.
+    *   `text_format` (optional object): Text format with keys like `bold`, `italic`, `fontSize`, `foregroundColor`, etc. Example: `{'bold': True, 'fontSize': 11}`.
+    *   `horizontal_alignment` (optional string): One of: `LEFT`, `CENTER`, `RIGHT`.
+    *   _Returns:_ Format operation result object.
 *   **`add_columns`**: Adds columns to a sheet. *(Verify parameters if implemented)*
 *   **`copy_sheet`**: Duplicates a sheet within a spreadsheet. *(Verify parameters if implemented)*
 *   **`rename_sheet`**: Renames an existing sheet. *(Verify parameters if implemented)*
@@ -458,6 +468,9 @@ Once connected, try prompts like:
 *   "Append these rows to the 'Log' sheet in spreadsheet `XYZ`: `[['2024-07-31', 'Task A Completed'], ['2024-08-01', 'Task B Started']]`"
 *   "Get a summary of the spreadsheets 'Sales Data' and 'Inventory Count'."
 *   "Share the 'Team Vacation Schedule' spreadsheet with `team@example.com` as a reader and `manager@example.com` as a writer. Don't send notifications."
+*   "Format cells A1:E1 in Sheet1 with orange background, bold black text."
+*   "Apply currency formatting to cells E2:E10 in the 'Sales' sheet."
+*   "Center align the text in cells B1:D1 and make them bold."
 
 ---
 
