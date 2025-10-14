@@ -928,6 +928,127 @@ def share_spreadsheet(spreadsheet_id: str,
             
     return {"successes": successes, "failures": failures}
 
+
+@mcp.tool()
+def format_cells(spreadsheet_id: str,
+                sheet: str,
+                range: str,
+                number_format: Optional[Dict[str, str]] = None,
+                background_color: Optional[Dict[str, float]] = None,
+                text_format: Optional[Dict[str, Any]] = None,
+                horizontal_alignment: Optional[str] = None,
+                ctx: Context = None) -> Dict[str, Any]:
+    """
+    Apply formatting to cells in a Google Spreadsheet.
+
+    Args:
+        spreadsheet_id: The ID of the spreadsheet (found in the URL)
+        sheet: The name of the sheet
+        range: Cell range in A1 notation (e.g., 'A1:C10' or 'E17')
+        number_format: Optional number format with 'type' and 'pattern' keys.
+                      Example: {'type': 'NUMBER', 'pattern': '$#,##0.00'} for currency
+                      Common types: 'NUMBER', 'CURRENCY', 'PERCENT', 'DATE', 'TIME', 'TEXT'
+        background_color: Optional background color with 'red', 'green', 'blue' keys (0-1 range).
+                         Example: {'red': 1, 'green': 1, 'blue': 1} for white
+        text_format: Optional text format with keys like 'bold', 'italic', 'fontSize', etc.
+                    Example: {'bold': True, 'fontSize': 11}
+        horizontal_alignment: Optional horizontal alignment. One of: 'LEFT', 'CENTER', 'RIGHT'
+
+    Returns:
+        Result of the format operation
+    """
+    sheets_service = ctx.request_context.lifespan_context.sheets_service
+
+    # Get sheet ID
+    spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+    sheet_id = None
+
+    for s in spreadsheet['sheets']:
+        if s['properties']['title'] == sheet:
+            sheet_id = s['properties']['sheetId']
+            break
+
+    if sheet_id is None:
+        return {"error": f"Sheet '{sheet}' not found"}
+
+    # Parse A1 notation to get row/column indices
+    # Simple parser for ranges like 'A1', 'A1:B2', 'E17', etc.
+    import re
+    match = re.match(r'([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?', range)
+    if not match:
+        return {"error": f"Invalid range format: {range}"}
+
+    def col_to_index(col: str) -> int:
+        """Convert column letter to 0-based index"""
+        result = 0
+        for char in col:
+            result = result * 26 + (ord(char) - ord('A') + 1)
+        return result - 1
+
+    start_col = col_to_index(match.group(1))
+    start_row = int(match.group(2)) - 1
+
+    if match.group(3) and match.group(4):
+        end_col = col_to_index(match.group(3)) + 1
+        end_row = int(match.group(4))
+    else:
+        end_col = start_col + 1
+        end_row = start_row + 1
+
+    # Build the cell format
+    cell_format = {}
+    fields = []
+
+    if number_format:
+        cell_format['numberFormat'] = number_format
+        fields.append('userEnteredFormat.numberFormat')
+
+    if background_color:
+        cell_format['backgroundColor'] = background_color
+        cell_format['backgroundColorStyle'] = {'rgbColor': background_color}
+        fields.append('userEnteredFormat.backgroundColor')
+        fields.append('userEnteredFormat.backgroundColorStyle')
+
+    if text_format:
+        cell_format['textFormat'] = text_format
+        fields.append('userEnteredFormat.textFormat')
+
+    if horizontal_alignment:
+        cell_format['horizontalAlignment'] = horizontal_alignment
+        fields.append('userEnteredFormat.horizontalAlignment')
+
+    if not fields:
+        return {"error": "No format options provided"}
+
+    # Prepare the format request
+    request_body = {
+        "requests": [
+            {
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": start_row,
+                        "endRowIndex": end_row,
+                        "startColumnIndex": start_col,
+                        "endColumnIndex": end_col
+                    },
+                    "cell": {
+                        "userEnteredFormat": cell_format
+                    },
+                    "fields": ','.join(fields)
+                }
+            }
+        ]
+    }
+
+    # Execute the request
+    result = sheets_service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body=request_body
+    ).execute()
+
+    return result
+
 def main():
     # Run the server
     mcp.run()
