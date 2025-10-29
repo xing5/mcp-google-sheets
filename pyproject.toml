@@ -29,6 +29,7 @@ source = "uv-dynamic-versioning"
 [tool.uv-dynamic-versioning]
 pattern = "default"
 strict = true
+fallback-version = "0.0.0"
 
 [project.scripts]
 mcp-google-sheets = "mcp_google_sheets:main"
