@@ -293,6 +293,27 @@ If you want to modify the code:
     # uv run start
     ```
 
+### Method 3: Docker (SSE transport)
+
+Run the server in a container using the included `Dockerfile`:
+
+```bash
+# Build the image
+docker build -t mcp-google-sheets .
+
+# Run (SSE on port 8000)
+# NOTE: Prefer CREDENTIALS_CONFIG (Base64 credentials content) in containers.
+docker run --rm -p 8000:8000 ^
+  -e HOST=0.0.0.0 ^
+  -e PORT=8000 ^
+  -e CREDENTIALS_CONFIG=YOUR_BASE64_CREDENTIALS ^
+  -e DRIVE_FOLDER_ID=YOUR_DRIVE_FOLDER_ID ^
+  mcp-google-sheets
+```
+
+- Use `CREDENTIALS_CONFIG` instead of `SERVICE_ACCOUNT_PATH` inside Docker to avoid mounting secrets as files.
+- The container starts with `--transport sse` and listens on `HOST`/`PORT`. Point your MCP client to `http://localhost:8000` using SSE transport.
+
 ---
 
 ## 🔌 Usage with Claude Desktop
