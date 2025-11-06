@@ -6,6 +6,7 @@ A Model Context Protocol (MCP) server built with FastMCP for interacting with Go
 
 import base64
 import os
+import sys
 from typing import List, Dict, Any, Optional, Union
 import json
 from dataclasses import dataclass
@@ -117,9 +118,20 @@ async def spreadsheet_lifespan(server: FastMCP) -> AsyncIterator[SpreadsheetCont
 
 
 # Initialize the MCP server with lifespan management
-mcp = FastMCP("Google Spreadsheet", 
+# Resolve host/port from environment variables with flexible names
+_resolved_host = os.environ.get('HOST') or os.environ.get('FASTMCP_HOST') or "0.0.0.0"
+_resolved_port_str = os.environ.get('PORT') or os.environ.get('FASTMCP_PORT') or "8000"
+try:
+    _resolved_port = int(_resolved_port_str)
+except ValueError:
+    _resolved_port = 8000
+
+# Initialize the MCP server with explicit host/port to ensure binding as configured
+mcp = FastMCP("Google Spreadsheet",
               dependencies=["google-auth", "google-auth-oauthlib", "google-api-python-client"],
-              lifespan=spreadsheet_lifespan)
+              lifespan=spreadsheet_lifespan,
+              host=_resolved_host,
+              port=_resolved_port)
 
 
 @mcp.tool()
@@ -930,4 +942,10 @@ def share_spreadsheet(spreadsheet_id: str,
 
 def main():
     # Run the server
-    mcp.run()
+    transport = "stdio"
+    for i, arg in enumerate(sys.argv):
+        if arg == "--transport" and i + 1 < len(sys.argv):
+            transport = sys.argv[i + 1]
+            break
+
+    mcp.run(transport=transport)
