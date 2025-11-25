@@ -73,12 +73,24 @@ async def spreadsheet_lifespan(server: FastMCP) -> AsyncIterator[SpreadsheetCont
         # If credentials are not valid or don't exist, get new ones
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-            else:
+                try:
+                    print("Attempting to refresh expired token...")
+                    creds.refresh(Request())
+                    print("Token refreshed successfully")
+                    # Save the refreshed token
+                    with open(TOKEN_PATH, 'w') as token:
+                        token.write(creds.to_json())
+                except Exception as refresh_error:
+                    print(f"Token refresh failed: {refresh_error}")
+                    print("Triggering reauthentication flow...")
+                    creds = None  # Clear creds to trigger OAuth flow below
+
+            # If refresh failed or creds don't exist, run OAuth flow
+            if not creds:
                 try:
                     flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_PATH, SCOPES)
                     creds = flow.run_local_server(port=0)
-                    
+
                     # Save the credentials for the next run
                     with open(TOKEN_PATH, 'w') as token:
                         token.write(creds.to_json())
