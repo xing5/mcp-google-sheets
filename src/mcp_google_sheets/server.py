@@ -1069,6 +1069,13 @@ def batch_update(spreadsheet_id: str,
     """
     sheets_service = ctx.request_context.lifespan_context.sheets_service
     
+    # Validate input
+    if not requests:
+        return {"error": "requests list cannot be empty"}
+    
+    if not all(isinstance(req, dict) for req in requests):
+        return {"error": "Each request must be a dictionary"}
+    
     # Prepare the batch update request body
     request_body = {
         "requests": requests
