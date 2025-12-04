@@ -123,7 +123,7 @@ _Refer to the [ID Reference Guide](#-id-reference-guide) for more information ab
     *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
     *   `sheet` (string): Name of the sheet/tab (e.g., "Sheet1").
     *   `range` (string): A1 notation range to write to (e.g., 'A1:C3').
-    *   `data` (array of arrays): 2D array of values to write. Example: `[[1,2,3], ["a","b","c"]]`.
+    *   `data` (array of arrays): 2D array of values to write. Example: `[[1, 2, 3], ["a", "b", "c"]]`.
     *   _Returns:_ Update result object ([`values.update` response](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values/update#response-body)).
 *   **`batch_update_cells`**: Updates multiple ranges in one API call.
     *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
