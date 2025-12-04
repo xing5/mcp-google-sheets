@@ -152,7 +152,7 @@ _Refer to the [ID Reference Guide](#-id-reference-guide) for more information ab
     *   _Returns:_ List of summary objects for each spreadsheet.
 *   **`share_spreadsheet`**: Shares a spreadsheet with specified users/emails and roles.
     *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
-    *   `recipients` (array of objects): `[{email_address: 'user@example.com', role: 'writer'}, ...]`. Roles: `reader`, `commenter`, `writer`.
+    *   `recipients` (array of objects): `[{"email_address": "user@example.com", "role": "writer"}, ...]`. Roles: `reader`, `commenter`, `writer`.
     *   `send_notification` (optional boolean, default `True`): Send email notifications to recipients.
     *   _Returns:_ Dictionary with `successes` and `failures` lists.
 *   **`add_columns`**: Adds (inserts) empty columns to a sheet/tab at a specified index.
