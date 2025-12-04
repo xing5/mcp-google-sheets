@@ -144,7 +144,7 @@ _Refer to the [ID Reference Guide](#-id-reference-guide) for more information ab
     *   `title` (string): Name for the new sheet/tab.
     *   _Returns:_ New sheet properties object.
 *   **`get_multiple_sheet_data`**: Fetches data from multiple ranges across potentially different spreadsheets in one call.
-    *   `queries` (array of objects): Each object needs `spreadsheet_id`, `sheet`, and `range`. Example: `[{spreadsheet_id: 'abc', sheet: 'Sheet1', range: 'A1:B2'}, ...]`.
+    *   `queries` (array of objects): Each object needs `spreadsheet_id`, `sheet`, and `range`. Example: `[{"spreadsheet_id": "abc", "sheet": "Sheet1", "range": "A1:B2"}, ...]`.
     *   _Returns:_ List of objects, each containing the query params and fetched `data` or an `error`. Each `data` is a [`values.get` response](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values/get#response-body).
 *   **`get_multiple_spreadsheet_summary`**: Gets titles, sheet/tab names, headers, and first few rows for multiple spreadsheets.
     *   `spreadsheet_ids` (array of strings): IDs of the spreadsheets (from their URLs).
