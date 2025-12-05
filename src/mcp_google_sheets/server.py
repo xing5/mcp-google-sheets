@@ -1051,4 +1051,5 @@ def format_cells(spreadsheet_id: str,
 
 def main():
     # Run the server
+    print("Starting Google Sheets MCP server...")
     mcp.run()
