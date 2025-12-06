@@ -1,4 +1,3 @@
-
 <div align="center">
   <!-- Main Title Link -->
   <b>mcp-google-sheets</b>
@@ -20,12 +19,15 @@
 
 `mcp-google-sheets` is a Python-based MCP server that acts as a bridge between any MCP-compatible client (like Claude Desktop) and the Google Sheets API. It allows you to interact with your Google Spreadsheets using a defined set of tools, enabling powerful automation and data manipulation workflows driven by AI.
 
+---
 
 ## 🚀 Quick Start (Using `uvx`)
 
 Essentially the server runs in one line: `uvx mcp-google-sheets@latest`. 
 
-This cmd will automatically download the latest code and run it. **We recommend always using `@latest`** to ensure you have the newest version with the latest features and bug fixes.
+This command will automatically download the latest code and run it. **We recommend always using `@latest`** to ensure you have the newest version with the latest features and bug fixes.
+
+_Refer to the [ID Reference Guide](#-id-reference-guide) for more information about the IDs used below._
 
 1.  **☁️ Prerequisite: Google Cloud Setup**
     *   You **must** configure Google Cloud Platform credentials and enable the necessary APIs first. We strongly recommend using a **Service Account**.
@@ -95,62 +97,81 @@ You're ready! Start issuing commands via your MCP client.
 
 This server exposes the following tools for interacting with Google Sheets:
 
+_Refer to the [ID Reference Guide](#-id-reference-guide) for more information about the IDs used below._
+
 *(Input parameters are typically strings unless otherwise specified)*
 
 *   **`list_spreadsheets`**: Lists spreadsheets in the configured Drive folder (Service Account) or accessible by the user (OAuth).
+    *   `folder_id` (optional string): Google Drive folder ID to search in. Get from its URL. If omitted, uses the configured default folder or searches 'My Drive'.
     *   _Returns:_ List of objects `[{id: string, title: string}]`
 *   **`create_spreadsheet`**: Creates a new spreadsheet.
-    *   `title` (string): The desired title.
-    *   _Returns:_ Object with spreadsheet info, including `spreadsheetId`.
-*   **`get_sheet_data`**: Reads data from a range in a sheet.
-    *   `spreadsheet_id` (string)
-    *   `sheet` (string): Name of the sheet.
-    *   `range` (optional string): A1 notation (e.g., `'A1:C10'`, `'Sheet1!B2:D'`). If omitted, reads the whole sheet.
-    *   `include_grid_data` (optional boolean, default False): If True, includes cell formatting and other metadata (larger response). If False, returns values only (more efficient).
-    *   _Returns:_ If `include_grid_data=True`, full grid data with metadata. If `False`, a values result object from the Values API.
-*   **`get_sheet_formulas`**: Reads formulas from a range in a sheet.
-    *   `spreadsheet_id` (string)
-    *   `sheet` (string): Name of the sheet.
-    *   `range` (optional string): A1 notation (e.g., `'A1:C10'`, `'Sheet1!B2:D'`). If omitted, reads the whole sheet.
-    *   _Returns:_ 2D array of cell formulas.
+    *   `title` (string): The desired title for the spreadsheet. Example: "Quarterly Report Q4".
+    *   `folder_id` (optional string): Google Drive folder ID where the spreadsheet should be created. Get from its URL. If omitted, uses configured default or root.
+    *   _Returns:_ Object with spreadsheet info, including `spreadsheetId`, `title`, and `folder`.
+*   **`get_sheet_data`**: Reads data from a range in a sheet/tab.
+    *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
+    *   `sheet` (string): Name of the sheet/tab (e.g., "Sheet1").
+    *   `range` (optional string): A1 notation (e.g., `'A1:C10'`, `'Sheet1!B2:D'`). If omitted, reads the whole sheet/tab specified by `sheet`.
+    *   `include_grid_data` (optional boolean, default `False`): If `True`, returns full grid data including formatting and metadata (much larger). If `False`, returns values only (more efficient).
+    *   _Returns:_ If `include_grid_data=True`, full grid data with metadata ([`get` response](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/get#response-body)). If `False`, a values result object from the Values API ([`values.get` response](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values/get#response-body)).
+*   **`get_sheet_formulas`**: Reads formulas from a range in a sheet/tab.
+    *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
+    *   `sheet` (string): Name of the sheet/tab (e.g., "Sheet1").
+    *   `range` (optional string): A1 notation (e.g., `'A1:C10'`, `'Sheet1!B2:D'`). If omitted, reads all formulas in the sheet/tab specified by `sheet`.
+    *   _Returns:_ 2D array of cell formulas (array of arrays) ([`values.get` response](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values/get#response-body)).
 *   **`update_cells`**: Writes data to a specific range. Overwrites existing data.
-    *   `spreadsheet_id` (string)
-    *   `sheet` (string)
-    *   `range` (string): A1 notation.
-    *   `data` (2D array): Values to write.
-    *   _Returns:_ Update result object.
+    *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
+    *   `sheet` (string): Name of the sheet/tab (e.g., "Sheet1").
+    *   `range` (string): A1 notation range to write to (e.g., 'A1:C3').
+    *   `data` (array of arrays): 2D array of values to write. Example: `[[1, 2, 3], ["a", "b", "c"]]`.
+    *   _Returns:_ Update result object ([`values.update` response](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values/update#response-body)).
 *   **`batch_update_cells`**: Updates multiple ranges in one API call.
-    *   `spreadsheet_id` (string)
-    *   `sheet` (string)
-    *   `ranges` (object): Dictionary mapping range strings (A1 notation) to 2D arrays of values `{ "A1:B2": [[1, 2], [3, 4]], "D5": [["Hello"]] }`.
-    *   _Returns:_ Batch update result object.
-*   **`add_rows`**: Appends rows to the end of a sheet (after the last row with data).
-    *   `spreadsheet_id` (string)
-    *   `sheet` (string)
-    *   `data` (2D array): Rows to append.
-    *   _Returns:_ Update result object.
-*   **`list_sheets`**: Lists all sheet names within a spreadsheet.
-    *   `spreadsheet_id` (string)
-    *   _Returns:_ List of sheet name strings `["Sheet1", "Sheet2"]`.
-*   **`create_sheet`**: Adds a new sheet (tab) to a spreadsheet.
-    *   `spreadsheet_id` (string)
-    *   `title` (string): Name for the new sheet.
+    *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
+    *   `sheet` (string): Name of the sheet/tab (e.g., "Sheet1").
+    *   `ranges` (object): Dictionary mapping range strings (A1 notation) to 2D arrays of values. Example: `{ "A1:B2": [[1, 2], [3, 4]], "D5": [["Hello"]] }`.
+    *   _Returns:_ Result of the operation ([`values.batchUpdate` response](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values/batchUpdate#response-body)).
+*   **`add_rows`**: Adds (inserts) empty rows to a sheet/tab at a specified index.
+    *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
+    *   `sheet` (string): Name of the sheet/tab (e.g., "Sheet1").
+    *   `count` (integer): Number of empty rows to insert.
+    *   `start_row` (optional integer, default `0`): 0-based row index to start inserting rows. If omitted, defaults to `0` (inserts at the beginning).
+    *   _Returns:_ Result of the operation ([`batchUpdate` response](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/batchUpdate#response-body)).
+*   **`list_sheets`**: Lists all sheet/tab names within a spreadsheet.
+    *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
+    *   _Returns:_ List of sheet/tab name strings. Example: `["Sheet1", "Sheet2"]`.
+*   **`create_sheet`**: Adds a new sheet/tab to a spreadsheet.
+    *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
+    *   `title` (string): Name for the new sheet/tab.
     *   _Returns:_ New sheet properties object.
 *   **`get_multiple_sheet_data`**: Fetches data from multiple ranges across potentially different spreadsheets in one call.
-    *   `queries` (array of objects): Each object needs `spreadsheet_id`, `sheet`, and `range`. `[{spreadsheet_id: 'abc', sheet: 'Sheet1', range: 'A1:B2'}, ...]`.
-    *   _Returns:_ List of objects, each containing the query params and fetched `data` or an `error`.
-*   **`get_multiple_spreadsheet_summary`**: Gets titles, sheet names, headers, and first few rows for multiple spreadsheets.
-    *   `spreadsheet_ids` (array of strings)
-    *   `rows_to_fetch` (optional integer, default 5): How many rows (including header) to preview.
+    *   `queries` (array of objects): Each object needs `spreadsheet_id`, `sheet`, and `range`. Example: `[{"spreadsheet_id": "abc", "sheet": "Sheet1", "range": "A1:B2"}, ...]`.
+    *   _Returns:_ List of objects, each containing the query params and fetched `data` or an `error`. Each `data` is a [`values.get` response](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values/get#response-body).
+*   **`get_multiple_spreadsheet_summary`**: Gets titles, sheet/tab names, headers, and first few rows for multiple spreadsheets.
+    *   `spreadsheet_ids` (array of strings): IDs of the spreadsheets (from their URLs).
+    *   `rows_to_fetch` (optional integer, default `5`): How many rows (including header) to preview. Example: `5`.
     *   _Returns:_ List of summary objects for each spreadsheet.
 *   **`share_spreadsheet`**: Shares a spreadsheet with specified users/emails and roles.
-    *   `spreadsheet_id` (string)
-    *   `recipients` (array of objects): `[{email_address: 'user@example.com', role: 'writer'}, ...]`. Roles: `reader`, `commenter`, `writer`.
-    *   `send_notification` (optional boolean, default True): Send email notifications.
+    *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
+    *   `recipients` (array of objects): `[{"email_address": "user@example.com", "role": "writer"}, ...]`. Roles: `reader`, `commenter`, `writer`.
+    *   `send_notification` (optional boolean, default `True`): Send email notifications to recipients.
     *   _Returns:_ Dictionary with `successes` and `failures` lists.
-*   **`add_columns`**: Adds columns to a sheet. *(Verify parameters if implemented)*
-*   **`copy_sheet`**: Duplicates a sheet within a spreadsheet. *(Verify parameters if implemented)*
-*   **`rename_sheet`**: Renames an existing sheet. *(Verify parameters if implemented)*
+*   **`add_columns`**: Adds (inserts) empty columns to a sheet/tab at a specified index.
+    *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
+    *   `sheet` (string): Name of the sheet/tab (e.g., "Sheet1").
+    *   `count` (integer): Number of empty columns to insert.
+    *   `start_column` (optional integer, default `0`): 0-based column index to start inserting. If omitted, defaults to `0` (inserts at the beginning).
+    *   _Returns:_ Result of the operation ([`batchUpdate` response](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/batchUpdate#response-body)).
+*   **`copy_sheet`**: Duplicates a sheet/tab from one spreadsheet to another and optionally renames it.
+    *   `src_spreadsheet` (string): Source spreadsheet ID (from its URL).
+    *   `src_sheet` (string): Source sheet/tab name (e.g., "Sheet1").
+    *   `dst_spreadsheet` (string): Destination spreadsheet ID (from its URL).
+    *   `dst_sheet` (string): Desired sheet/tab name in the destination spreadsheet.
+    *   _Returns:_ Result of the copy and optional rename operations.
+*   **`rename_sheet`**: Renames an existing sheet/tab.
+    *   `spreadsheet` (string): The spreadsheet ID (from its URL).
+    *   `sheet` (string): Current sheet/tab name (e.g., "Sheet1").
+    *   `new_name` (string): New sheet/tab name (e.g., "Transactions").
+    *   _Returns:_ Result of the operation ([`batchUpdate` response](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/batchUpdate#response-body)).
 
 **MCP Resources:**
 
@@ -174,6 +195,8 @@ This setup is **required** before running the server.
 ## 🔑 Authentication & Environment Variables (Detailed)
 
 The server needs credentials to access Google APIs. Choose one method:
+
+_Refer to the [ID Reference Guide](#-id-reference-guide) for more information about the IDs used below._
 
 ### Method A: Service Account (Recommended for Servers/Automation) ✅
 
@@ -258,18 +281,20 @@ The server checks for credentials in this order:
 
 **Environment Variable Summary:**
 
-| Variable               | Method(s)                   | Description                                                     | Default          |
-| :--------------------- | :-------------------------- | :-------------------------------------------------------------- | :--------------- |
-| `SERVICE_ACCOUNT_PATH` | Service Account             | Path to the Service Account JSON key file (MCP server specific). | -                |
-| `GOOGLE_APPLICATION_CREDENTIALS` | ADC                   | Path to service account key (Google's standard variable).       | -                |
-| `DRIVE_FOLDER_ID`      | Service Account             | ID of the Google Drive folder shared with the Service Account.  | -                |
-| `CREDENTIALS_PATH`     | OAuth 2.0                   | Path to the OAuth 2.0 Client ID JSON file.                    | `credentials.json` |
-| `TOKEN_PATH`           | OAuth 2.0                   | Path to store the generated OAuth token.                        | `token.json`     |
-| `CREDENTIALS_CONFIG`   | Service Account / OAuth 2.0 | Base64 encoded JSON string of credentials content.              | -                |
+| Variable                         | Method(s)                   | Description                                                      | Default            |
+|:---------------------------------|:----------------------------|:-----------------------------------------------------------------|:-------------------|
+| `SERVICE_ACCOUNT_PATH`           | Service Account             | Path to the Service Account JSON key file (MCP server specific). | -                  |
+| `GOOGLE_APPLICATION_CREDENTIALS` | ADC                         | Path to service account key (Google's standard variable).        | -                  |
+| `DRIVE_FOLDER_ID`                | Service Account             | ID of the Google Drive folder shared with the Service Account.   | -                  |
+| `CREDENTIALS_PATH`               | OAuth 2.0                   | Path to the OAuth 2.0 Client ID JSON file.                       | `credentials.json` |
+| `TOKEN_PATH`                     | OAuth 2.0                   | Path to store the generated OAuth token.                         | `token.json`       |
+| `CREDENTIALS_CONFIG`             | Service Account / OAuth 2.0 | Base64 encoded JSON string of credentials content.               | -                  |
 
 ---
 
 ## ⚙️ Running the Server (Detailed)
+
+_Refer to the [ID Reference Guide](#-id-reference-guide) for more information about the IDs used below._
 
 ### Method 1: Using `uvx` (Recommended for Users)
 
@@ -319,6 +344,8 @@ docker run --rm -p 8000:8000 ^
 ## 🔌 Usage with Claude Desktop
 
 Add the server config to `claude_desktop_config.json` under `mcpServers`. Choose the block matching your setup:
+
+_Refer to the [ID Reference Guide](#-id-reference-guide) for more information about the IDs used below._
 
 **⚠️ Important Notes:**
 - **🍎 macOS Users:** use the full path: `"/Users/yourusername/.local/bin/uvx"` instead of just `"uvx"`
@@ -479,6 +506,26 @@ Once connected, try prompts like:
 *   "Append these rows to the 'Log' sheet in spreadsheet `XYZ`: `[['2024-07-31', 'Task A Completed'], ['2024-08-01', 'Task B Started']]`"
 *   "Get a summary of the spreadsheets 'Sales Data' and 'Inventory Count'."
 *   "Share the 'Team Vacation Schedule' spreadsheet with `team@example.com` as a reader and `manager@example.com` as a writer. Don't send notifications."
+
+---
+
+## 🆔 ID Reference Guide
+
+Use the following reference guide to find the various IDs referenced throughout the docs:
+
+```
+Google Cloud Project ID:
+  https://console.cloud.google.com/apis/dashboard?project=sheets-mcp-server-123456
+                                                          └───── Project ID ─────┘
+
+Google Drive Folder ID:
+  https://drive.google.com/drive/u/0/folders/1xcRQCU9xrNVBPTeNzHqx4hrG7yR91WIa
+                                             └────────── Folder ID ──────────┘
+
+Google Sheets Spreadsheet ID:
+  https://docs.google.com/spreadsheets/d/25_-_raTaKjaVxu9nJzA7-FCrNhnkd3cXC54BPAOXemI/edit
+                                         └───────────── Spreadsheet ID ─────────────┘
+```
 
 ---
 
