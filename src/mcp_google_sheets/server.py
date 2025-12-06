@@ -1010,6 +1010,86 @@ def list_folders(parent_folder_id: Optional[str] = None, ctx: Context = None) ->
     ]
 
 
+@mcp.tool()
+def batch_update(spreadsheet_id: str,
+                 requests: List[Dict[str, Any]],
+                 ctx: Context = None) -> Dict[str, Any]:
+    """
+    Execute a batch update on a Google Spreadsheet using the full batchUpdate endpoint.
+    This provides access to all batchUpdate operations including adding sheets, updating properties,
+    inserting/deleting dimensions, formatting, and more.
+    
+    Args:
+        spreadsheet_id: The ID of the spreadsheet (found in the URL)
+        requests: A list of request objects. Each request object can contain any valid batchUpdate operation.
+                 Common operations include:
+                 - addSheet: Add a new sheet
+                 - updateSheetProperties: Update sheet properties (title, grid properties, etc.)
+                 - insertDimension: Insert rows or columns
+                 - deleteDimension: Delete rows or columns
+                 - updateCells: Update cell values and formatting
+                 - updateBorders: Update cell borders
+                 - addConditionalFormatRule: Add conditional formatting
+                 - deleteConditionalFormatRule: Remove conditional formatting
+                 - updateDimensionProperties: Update row/column properties
+                 - and many more...
+                 
+                 Example requests:
+                 [
+                     {
+                         "addSheet": {
+                             "properties": {
+                                 "title": "New Sheet"
+                             }
+                         }
+                     },
+                     {
+                         "updateSheetProperties": {
+                             "properties": {
+                                 "sheetId": 0,
+                                 "title": "Renamed Sheet"
+                             },
+                             "fields": "title"
+                         }
+                     },
+                     {
+                         "insertDimension": {
+                             "range": {
+                                 "sheetId": 0,
+                                 "dimension": "ROWS",
+                                 "startIndex": 1,
+                                 "endIndex": 3
+                             }
+                         }
+                     }
+                 ]
+    
+    Returns:
+        Result of the batch update operation, including replies for each request
+    """
+    sheets_service = ctx.request_context.lifespan_context.sheets_service
+    
+    # Validate input
+    if not requests:
+        return {"error": "requests list cannot be empty"}
+    
+    if not all(isinstance(req, dict) for req in requests):
+        return {"error": "Each request must be a dictionary"}
+    
+    # Prepare the batch update request body
+    request_body = {
+        "requests": requests
+    }
+    
+    # Execute the batch update
+    result = sheets_service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body=request_body
+    ).execute()
+    
+    return result
+
+
 def main():
     # Run the server
     transport = "stdio"
