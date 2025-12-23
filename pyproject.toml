@@ -5,7 +5,7 @@ description = "This MCP server integrates with your Google Drive and Google Shee
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "mcp>=1.5.0",
+    "mcp>=1.8.0",
     "google-auth>=2.28.1",
     "google-auth-oauthlib>=1.2.0",
     "google-api-python-client>=2.117.0",

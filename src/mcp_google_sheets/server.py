@@ -15,6 +15,7 @@ from collections.abc import AsyncIterator
 
 # MCP imports
 from mcp.server.fastmcp import FastMCP, Context
+from mcp.types import ToolAnnotations
 
 # Google API imports
 from google.oauth2.credentials import Credentials
@@ -146,8 +147,13 @@ mcp = FastMCP("Google Spreadsheet",
               port=_resolved_port)
 
 
-@mcp.tool()
-def get_sheet_data(spreadsheet_id: str, 
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Get Sheet Data",
+        readOnlyHint=True,
+    ),
+)
+def get_sheet_data(spreadsheet_id: str,
                    sheet: str,
                    range: Optional[str] = None,
                    include_grid_data: bool = False,
@@ -200,7 +206,12 @@ def get_sheet_data(spreadsheet_id: str,
 
     return result
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Get Sheet Formulas",
+        readOnlyHint=True,
+    ),
+)
 def get_sheet_formulas(spreadsheet_id: str,
                        sheet: str,
                        range: Optional[str] = None,
@@ -235,7 +246,12 @@ def get_sheet_formulas(spreadsheet_id: str,
     formulas = result.get('values', [])
     return formulas
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Update Cells",
+        destructiveHint=True,
+    ),
+)
 def update_cells(spreadsheet_id: str,
                 sheet: str,
                 range: str,
@@ -274,7 +290,12 @@ def update_cells(spreadsheet_id: str,
     return result
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Batch Update Cells",
+        destructiveHint=True,
+    ),
+)
 def batch_update_cells(spreadsheet_id: str,
                        sheet: str,
                        ranges: Dict[str, List[List[Any]]],
@@ -316,7 +337,12 @@ def batch_update_cells(spreadsheet_id: str,
     return result
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Add Rows",
+        destructiveHint=True,
+    ),
+)
 def add_rows(spreadsheet_id: str,
              sheet: str,
              count: int,
@@ -374,7 +400,12 @@ def add_rows(spreadsheet_id: str,
     return result
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Add Columns",
+        destructiveHint=True,
+    ),
+)
 def add_columns(spreadsheet_id: str,
                 sheet: str,
                 count: int,
@@ -432,7 +463,12 @@ def add_columns(spreadsheet_id: str,
     return result
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="List Sheets",
+        readOnlyHint=True,
+    ),
+)
 def list_sheets(spreadsheet_id: str, ctx: Context = None) -> List[str]:
     """
     List all sheets in a Google Spreadsheet.
@@ -454,7 +490,12 @@ def list_sheets(spreadsheet_id: str, ctx: Context = None) -> List[str]:
     return sheet_names
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Copy Sheet",
+        destructiveHint=True,
+    ),
+)
 def copy_sheet(src_spreadsheet: str,
                src_sheet: str,
                dst_spreadsheet: str,
@@ -528,7 +569,12 @@ def copy_sheet(src_spreadsheet: str,
     return {"copy": copy_result}
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Rename Sheet",
+        destructiveHint=True,
+    ),
+)
 def rename_sheet(spreadsheet: str,
                  sheet: str,
                  new_name: str,
@@ -582,8 +628,13 @@ def rename_sheet(spreadsheet: str,
     return result
 
 
-@mcp.tool()
-def get_multiple_sheet_data(queries: List[Dict[str, str]], 
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Get Multiple Sheet Data",
+        readOnlyHint=True,
+    ),
+)
+def get_multiple_sheet_data(queries: List[Dict[str, str]],
                             ctx: Context = None) -> List[Dict[str, Any]]:
     """
     Get data from multiple specific ranges in Google Spreadsheets.
@@ -630,9 +681,14 @@ def get_multiple_sheet_data(queries: List[Dict[str, str]],
     return results
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Get Multiple Spreadsheet Summary",
+        readOnlyHint=True,
+    ),
+)
 def get_multiple_spreadsheet_summary(spreadsheet_ids: List[str],
-                                   rows_to_fetch: int = 5, 
+                                   rows_to_fetch: int = 5,
                                    ctx: Context = None) -> List[Dict[str, Any]]:
     """
     Get a summary of multiple Google Spreadsheets, including sheet names, 
@@ -753,7 +809,12 @@ def get_spreadsheet_info(spreadsheet_id: str) -> str:
     return json.dumps(info, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Create Spreadsheet",
+        destructiveHint=True,
+    ),
+)
 def create_spreadsheet(title: str, folder_id: Optional[str] = None, ctx: Context = None) -> Dict[str, Any]:
     """
     Create a new Google Spreadsheet.
@@ -796,9 +857,14 @@ def create_spreadsheet(title: str, folder_id: Optional[str] = None, ctx: Context
     }
 
 
-@mcp.tool()
-def create_sheet(spreadsheet_id: str, 
-                title: str, 
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Create Sheet",
+        destructiveHint=True,
+    ),
+)
+def create_sheet(spreadsheet_id: str,
+                title: str,
                 ctx: Context = None) -> Dict[str, Any]:
     """
     Create a new sheet tab in an existing Google Spreadsheet.
@@ -842,7 +908,12 @@ def create_sheet(spreadsheet_id: str,
     }
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="List Spreadsheets",
+        readOnlyHint=True,
+    ),
+)
 def list_spreadsheets(folder_id: Optional[str] = None, ctx: Context = None) -> List[Dict[str, str]]:
     """
     List all spreadsheets in the specified Google Drive folder.
@@ -883,8 +954,13 @@ def list_spreadsheets(folder_id: Optional[str] = None, ctx: Context = None) -> L
     return [{'id': sheet['id'], 'title': sheet['name']} for sheet in spreadsheets]
 
 
-@mcp.tool()
-def share_spreadsheet(spreadsheet_id: str, 
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Share Spreadsheet",
+        destructiveHint=True,
+    ),
+)
+def share_spreadsheet(spreadsheet_id: str,
                       recipients: List[Dict[str, str]],
                       send_notification: bool = True,
                       ctx: Context = None) -> Dict[str, List[Dict[str, Any]]]:
@@ -962,7 +1038,12 @@ def share_spreadsheet(spreadsheet_id: str,
     return {"successes": successes, "failures": failures}
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="List Folders",
+        readOnlyHint=True,
+    ),
+)
 def list_folders(parent_folder_id: Optional[str] = None, ctx: Context = None) -> List[Dict[str, str]]:
     """
     List all folders in the specified Google Drive folder.
@@ -1010,7 +1091,12 @@ def list_folders(parent_folder_id: Optional[str] = None, ctx: Context = None) ->
     ]
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Batch Update",
+        destructiveHint=True,
+    ),
+)
 def batch_update(spreadsheet_id: str,
                  requests: List[Dict[str, Any]],
                  ctx: Context = None) -> Dict[str, Any]:
