@@ -1065,6 +1065,93 @@ def search_spreadsheets(query: str,
         return [{'error': f'Search failed: {str(e)}'}]
 
 
+def _column_index_to_letter(index: int) -> str:
+    """Convert 0-based column index to A1 notation letter (0='A', 25='Z', 26='AA', etc.)"""
+    result = ""
+    while index >= 0:
+        result = chr(index % 26 + ord('A')) + result
+        index = index // 26 - 1
+    return result
+
+
+@mcp.tool()
+def find_in_spreadsheet(spreadsheet_id: str,
+                        query: str,
+                        sheet: Optional[str] = None,
+                        case_sensitive: bool = False,
+                        max_results: int = 50,
+                        ctx: Context = None) -> List[Dict[str, Any]]:
+    """
+    Find cells containing a specific value in a Google Spreadsheet.
+
+    Args:
+        spreadsheet_id: The ID of the spreadsheet (found in the URL)
+        query: The text to search for in cell values
+        sheet: Optional sheet name to search in. If not provided, searches all sheets.
+        case_sensitive: Whether the search should be case-sensitive (default False)
+        max_results: Maximum number of results to return (default 50)
+
+    Returns:
+        List of found cells with their location (sheet, cell in A1 notation) and value
+    """
+    sheets_service = ctx.request_context.lifespan_context.sheets_service
+    results = []
+
+    try:
+        # Get spreadsheet metadata to find all sheets
+        spreadsheet = sheets_service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            fields='sheets(properties(title,sheetId))'
+        ).execute()
+
+        sheets_to_search = []
+        for s in spreadsheet.get('sheets', []):
+            sheet_title = s.get('properties', {}).get('title')
+            if sheet is None or sheet_title == sheet:
+                sheets_to_search.append(sheet_title)
+
+        if not sheets_to_search:
+            return [{'error': f"Sheet '{sheet}' not found"}]
+
+        search_query = query if case_sensitive else query.lower()
+
+        for sheet_name in sheets_to_search:
+            if len(results) >= max_results:
+                break
+
+            # Get all data from the sheet
+            response = sheets_service.spreadsheets().values().get(
+                spreadsheetId=spreadsheet_id,
+                range=sheet_name
+            ).execute()
+
+            values = response.get('values', [])
+
+            for row_idx, row in enumerate(values):
+                if len(results) >= max_results:
+                    break
+
+                for col_idx, cell_value in enumerate(row):
+                    if len(results) >= max_results:
+                        break
+
+                    cell_str = str(cell_value)
+                    compare_value = cell_str if case_sensitive else cell_str.lower()
+
+                    if search_query in compare_value:
+                        cell_ref = f"{_column_index_to_letter(col_idx)}{row_idx + 1}"
+                        results.append({
+                            'sheet': sheet_name,
+                            'cell': cell_ref,
+                            'value': cell_value
+                        })
+
+        return results
+
+    except Exception as e:
+        return [{'error': f'Search failed: {str(e)}'}]
+
+
 @mcp.tool()
 def batch_update(spreadsheet_id: str,
                  requests: List[Dict[str, Any]],
