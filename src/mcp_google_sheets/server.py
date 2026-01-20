@@ -1162,6 +1162,86 @@ def _column_index_to_letter(index: int) -> str:
     return result
 
 
+def _letter_to_column_index(letter: str) -> int:
+    """Convert A1 notation letter to 0-based column index ('A'=0, 'Z'=25, 'AA'=26, etc.)"""
+    result = 0
+    for char in letter.upper():
+        result = result * 26 + (ord(char) - ord('A') + 1)
+    return result - 1
+
+
+def _parse_a1_notation(range_str: str) -> Dict[str, int]:
+    """
+    Parse A1 notation range to row/column indices.
+    
+    Args:
+        range_str: A1 notation range (e.g., 'A1:C10')
+    
+    Returns:
+        Dictionary with startRowIndex, endRowIndex, startColumnIndex, endColumnIndex
+    """
+    import re
+    
+    # Match patterns like A1, A1:B2, A:B, 1:10
+    match = re.match(r'^([A-Z]+)?(\d+)?(?::([A-Z]+)?(\d+)?)?$', range_str.upper())
+    
+    if not match:
+        raise ValueError(f"Invalid A1 notation: {range_str}")
+    
+    start_col, start_row, end_col, end_row = match.groups()
+    
+    result = {}
+    
+    # Start column
+    if start_col:
+        result['startColumnIndex'] = _letter_to_column_index(start_col)
+    
+    # Start row (A1 notation is 1-based, convert to 0-based)
+    if start_row:
+        result['startRowIndex'] = int(start_row) - 1
+    
+    # End column (exclusive in API, so add 1)
+    if end_col:
+        result['endColumnIndex'] = _letter_to_column_index(end_col) + 1
+    elif start_col:
+        result['endColumnIndex'] = result['startColumnIndex'] + 1
+    
+    # End row (exclusive in API, so no -1 needed)
+    if end_row:
+        result['endRowIndex'] = int(end_row)
+    elif start_row:
+        result['endRowIndex'] = result['startRowIndex'] + 1
+    
+    return result
+
+
+def _get_sheet_id(sheets_service: Any, spreadsheet_id: str, sheet_name: str) -> Optional[int]:
+    """
+    Get the sheet ID for a given sheet name.
+    
+    Args:
+        sheets_service: Google Sheets service instance
+        spreadsheet_id: The spreadsheet ID
+        sheet_name: The name of the sheet
+    
+    Returns:
+        The sheet ID, or None if not found
+    """
+    try:
+        spreadsheet = sheets_service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            fields='sheets(properties(title,sheetId))'
+        ).execute()
+        
+        for sheet in spreadsheet.get('sheets', []):
+            if sheet['properties']['title'] == sheet_name:
+                return sheet['properties']['sheetId']
+        
+        return None
+    except Exception:
+        return None
+
+
 @mcp.tool(
     annotations=ToolAnnotations(
         title="Find Cells",
@@ -1328,6 +1408,218 @@ def batch_update(spreadsheet_id: str,
     ).execute()
     
     return result
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Add Chart",
+        destructiveHint=True,
+    ),
+)
+def add_chart(spreadsheet_id: str,
+              sheet: str,
+              chart_type: str,
+              data_range: str,
+              title: Optional[str] = None,
+              x_axis_label: Optional[str] = None,
+              y_axis_label: Optional[str] = None,
+              position_x: int = 0,
+              position_y: int = 0,
+              width: int = 600,
+              height: int = 400,
+              ctx: Context = None) -> Dict[str, Any]:
+    """
+    Add a chart to a Google Spreadsheet.
+    
+    Creates a chart from the specified data range with customizable type, title, and positioning.
+    The chart is added as a floating element on the sheet.
+    
+    Args:
+        spreadsheet_id: The ID of the spreadsheet (found in the URL)
+        sheet: The name of the sheet containing the data
+        chart_type: Type of chart to create. Supported types:
+                   - COLUMN: Vertical bar chart
+                   - BAR: Horizontal bar chart
+                   - LINE: Line chart
+                   - AREA: Area chart
+                   - PIE: Pie chart
+                   - SCATTER: Scatter plot
+                   - COMBO: Combination chart
+                   - HISTOGRAM: Histogram
+        data_range: A1 notation range for chart data (e.g., 'A1:C10'). 
+                   The first row is typically treated as headers.
+        title: Optional title for the chart
+        x_axis_label: Optional label for the X axis (bottom axis)
+        y_axis_label: Optional label for the Y axis (left axis)
+        position_x: Horizontal position offset in pixels from the top-left corner (default: 0)
+        position_y: Vertical position offset in pixels from the top-left corner (default: 0)
+        width: Width of the chart in pixels (default: 600)
+        height: Height of the chart in pixels (default: 400)
+    
+    Returns:
+        Result of the chart creation operation
+    
+    Examples:
+        Create a column chart showing sales data:
+        add_chart(
+            spreadsheet_id="abc123",
+            sheet="Sales",
+            chart_type="COLUMN",
+            data_range="A1:B13",
+            title="Monthly Sales",
+            x_axis_label="Month",
+            y_axis_label="Revenue ($)"
+        )
+        
+        Create a pie chart for market share:
+        add_chart(
+            spreadsheet_id="abc123",
+            sheet="Market",
+            chart_type="PIE",
+            data_range="A1:B5",
+            title="Market Share by Product"
+        )
+    """
+    sheets_service = ctx.request_context.lifespan_context.sheets_service
+    
+    # Validate chart type
+    valid_chart_types = ['COLUMN', 'BAR', 'LINE', 'AREA', 'PIE', 'SCATTER', 'COMBO', 'HISTOGRAM']
+    if chart_type.upper() not in valid_chart_types:
+        return {
+            "error": f"Invalid chart type '{chart_type}'. Must be one of: {', '.join(valid_chart_types)}"
+        }
+    
+    chart_type = chart_type.upper()
+    
+    # Get sheet ID
+    sheet_id = _get_sheet_id(sheets_service, spreadsheet_id, sheet)
+    if sheet_id is None:
+        return {"error": f"Sheet '{sheet}' not found in spreadsheet"}
+    
+    # Parse the A1 notation range
+    try:
+        range_indices = _parse_a1_notation(data_range)
+    except ValueError as e:
+        return {"error": str(e)}
+    
+    # Build the source range for the chart
+    source_range = {
+        "sheetId": sheet_id,
+        **range_indices
+    }
+    
+    # Build chart specification
+    chart_spec = {
+        "basicChart": {
+            "chartType": chart_type,
+            "legendPosition": "RIGHT_LEGEND",
+            "axis": [],
+            "domains": [{
+                "domain": {
+                    "sourceRange": {
+                        "sources": [source_range]
+                    }
+                }
+            }],
+            "series": [{
+                "series": {
+                    "sourceRange": {
+                        "sources": [source_range]
+                    }
+                },
+                "targetAxis": "LEFT_AXIS"
+            }],
+            "headerCount": 1
+        }
+    }
+    
+    # Add title if provided
+    if title:
+        chart_spec["title"] = title
+    
+    # Add axis labels if provided (for non-pie charts)
+    if chart_type != "PIE":
+        if x_axis_label:
+            chart_spec["basicChart"]["axis"].append({
+                "position": "BOTTOM_AXIS",
+                "title": x_axis_label
+            })
+        else:
+            chart_spec["basicChart"]["axis"].append({
+                "position": "BOTTOM_AXIS"
+            })
+        
+        if y_axis_label:
+            chart_spec["basicChart"]["axis"].append({
+                "position": "LEFT_AXIS",
+                "title": y_axis_label
+            })
+        else:
+            chart_spec["basicChart"]["axis"].append({
+                "position": "LEFT_AXIS"
+            })
+    
+    # For PIE charts, use pieChart spec instead of basicChart
+    if chart_type == "PIE":
+        chart_spec = {
+            "pieChart": {
+                "legendPosition": "RIGHT_LEGEND",
+                "domain": {
+                    "sourceRange": {
+                        "sources": [source_range]
+                    }
+                },
+                "series": {
+                    "sourceRange": {
+                        "sources": [source_range]
+                    }
+                }
+            }
+        }
+        if title:
+            chart_spec["title"] = title
+    
+    # Build the add chart request
+    request_body = {
+        "requests": [{
+            "addChart": {
+                "chart": {
+                    "spec": chart_spec,
+                    "position": {
+                        "overlayPosition": {
+                            "anchorCell": {
+                                "sheetId": sheet_id,
+                                "rowIndex": 0,
+                                "columnIndex": 0
+                            },
+                            "offsetXPixels": position_x,
+                            "offsetYPixels": position_y,
+                            "widthPixels": width,
+                            "heightPixels": height
+                        }
+                    }
+                }
+            }
+        }]
+    }
+    
+    # Execute the request
+    try:
+        result = sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body=request_body
+        ).execute()
+        
+        return {
+            "success": True,
+            "message": f"Chart '{title or chart_type}' added successfully",
+            "chartId": result.get('replies', [{}])[0].get('addChart', {}).get('chart', {}).get('chartId'),
+            "result": result
+        }
+    except Exception as e:
+        return {
+            "error": f"Failed to add chart: {str(e)}"
+        }
 
 
 def main():
