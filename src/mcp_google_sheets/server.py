@@ -1011,6 +1011,148 @@ def list_folders(parent_folder_id: Optional[str] = None, ctx: Context = None) ->
 
 
 @mcp.tool()
+def search_spreadsheets(query: str,
+                        max_results: int = 20,
+                        ctx: Context = None) -> List[Dict[str, Any]]:
+    """
+    Search for spreadsheets in Google Drive by name or content.
+
+    Args:
+        query: Search query string. Searches in file name and content.
+               Examples: "budget 2024", "sales report", "project tracker"
+        max_results: Maximum number of results to return (default 20, max 100)
+
+    Returns:
+        List of matching spreadsheets with their ID, name, and metadata
+    """
+    drive_service = ctx.request_context.lifespan_context.drive_service
+
+    # Limit max_results to reasonable bounds
+    max_results = min(max(1, max_results), 100)
+
+    # Build the search query for Google Drive
+    # Search only for spreadsheets and match the query in name or fullText
+    search_query = (
+        f"mimeType='application/vnd.google-apps.spreadsheet' and "
+        f"(name contains '{query}' or fullText contains '{query}')"
+    )
+
+    try:
+        results = drive_service.files().list(
+            q=search_query,
+            pageSize=max_results,
+            spaces='drive',
+            includeItemsFromAllDrives=True,
+            supportsAllDrives=True,
+            fields='files(id, name, createdTime, modifiedTime, owners, webViewLink)',
+            orderBy='modifiedTime desc'
+        ).execute()
+
+        files = results.get('files', [])
+
+        return [
+            {
+                'id': f['id'],
+                'name': f['name'],
+                'created_time': f.get('createdTime'),
+                'modified_time': f.get('modifiedTime'),
+                'owners': [owner.get('emailAddress') for owner in f.get('owners', [])],
+                'web_link': f.get('webViewLink')
+            }
+            for f in files
+        ]
+    except Exception as e:
+        return [{'error': f'Search failed: {str(e)}'}]
+
+
+def _column_index_to_letter(index: int) -> str:
+    """Convert 0-based column index to A1 notation letter (0='A', 25='Z', 26='AA', etc.)"""
+    result = ""
+    while index >= 0:
+        result = chr(index % 26 + ord('A')) + result
+        index = index // 26 - 1
+    return result
+
+
+@mcp.tool()
+def find_in_spreadsheet(spreadsheet_id: str,
+                        query: str,
+                        sheet: Optional[str] = None,
+                        case_sensitive: bool = False,
+                        max_results: int = 50,
+                        ctx: Context = None) -> List[Dict[str, Any]]:
+    """
+    Find cells containing a specific value in a Google Spreadsheet.
+
+    Args:
+        spreadsheet_id: The ID of the spreadsheet (found in the URL)
+        query: The text to search for in cell values
+        sheet: Optional sheet name to search in. If not provided, searches all sheets.
+        case_sensitive: Whether the search should be case-sensitive (default False)
+        max_results: Maximum number of results to return (default 50)
+
+    Returns:
+        List of found cells with their location (sheet, cell in A1 notation) and value
+    """
+    sheets_service = ctx.request_context.lifespan_context.sheets_service
+    results = []
+
+    try:
+        # Get spreadsheet metadata to find all sheets
+        spreadsheet = sheets_service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            fields='sheets(properties(title,sheetId))'
+        ).execute()
+
+        sheets_to_search = []
+        for s in spreadsheet.get('sheets', []):
+            sheet_title = s.get('properties', {}).get('title')
+            if sheet is None or sheet_title == sheet:
+                sheets_to_search.append(sheet_title)
+
+        if not sheets_to_search:
+            return [{'error': f"Sheet '{sheet}' not found"}]
+
+        search_query = query if case_sensitive else query.lower()
+
+        for sheet_name in sheets_to_search:
+            if len(results) >= max_results:
+                break
+
+            # Get all data from the sheet
+            response = sheets_service.spreadsheets().values().get(
+                spreadsheetId=spreadsheet_id,
+                range=sheet_name
+            ).execute()
+
+            values = response.get('values', [])
+
+            for row_idx, row in enumerate(values):
+                if len(results) >= max_results:
+                    break
+
+                for col_idx, cell_value in enumerate(row):
+                    if len(results) >= max_results:
+                        break
+
+                    cell_str = str(cell_value)
+                    compare_value = cell_str if case_sensitive else cell_str.lower()
+
+                    if search_query in compare_value:
+                        cell_ref = f"{_column_index_to_letter(col_idx)}{row_idx + 1}"
+                        results.append({
+                            'sheet': sheet_name,
+                            'cell': cell_ref,
+                            'value': cell_value
+                        })
+
+        return results
+
+    except Exception as e:
+        return [{'error': f'Search failed: {str(e)}'}]
+
+
+@mcp.tool()
 def batch_update(spreadsheet_id: str,
                  requests: List[Dict[str, Any]],
                  ctx: Context = None) -> Dict[str, Any]:
