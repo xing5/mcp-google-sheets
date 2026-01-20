@@ -33,6 +33,34 @@ CREDENTIALS_PATH = os.environ.get('CREDENTIALS_PATH', 'credentials.json')
 SERVICE_ACCOUNT_PATH = os.environ.get('SERVICE_ACCOUNT_PATH', 'service_account.json')
 DRIVE_FOLDER_ID = os.environ.get('DRIVE_FOLDER_ID', '')  # Working directory in Google Drive
 
+# Tool filtering configuration
+# Parse enabled tools from environment variable or command-line argument
+def _parse_enabled_tools() -> Optional[set]:
+    """
+    Parse enabled tools from ENABLED_TOOLS environment variable or --include-tools argument.
+    Returns None if all tools should be enabled (default behavior).
+    Returns a set of tool names if filtering is requested.
+    """
+    # Check command-line arguments first
+    enabled_tools_str = None
+    for i, arg in enumerate(sys.argv):
+        if arg == '--include-tools' and i + 1 < len(sys.argv):
+            enabled_tools_str = sys.argv[i + 1]
+            break
+    
+    # Fall back to environment variable
+    if not enabled_tools_str:
+        enabled_tools_str = os.environ.get('ENABLED_TOOLS')
+    
+    if not enabled_tools_str:
+        return None  # No filtering, enable all tools
+    
+    # Parse comma-separated list and normalize
+    tools = {tool.strip() for tool in enabled_tools_str.split(',') if tool.strip()}
+    return tools if tools else None
+
+ENABLED_TOOLS = _parse_enabled_tools()
+
 @dataclass
 class SpreadsheetContext:
     """Context for Google Spreadsheet service"""
@@ -147,7 +175,38 @@ mcp = FastMCP("Google Spreadsheet",
               port=_resolved_port)
 
 
-@mcp.tool(
+def tool(annotations: Optional[ToolAnnotations] = None):
+    """
+    Conditional tool decorator that only registers tools if they're enabled.
+    
+    This wrapper checks ENABLED_TOOLS configuration and only applies the @mcp.tool
+    decorator if the tool should be enabled. If ENABLED_TOOLS is None (default),
+    all tools are enabled.
+    
+    Args:
+        annotations: Optional ToolAnnotations for the tool
+    
+    Returns:
+        Decorator function
+    """
+    def decorator(func):
+        tool_name = func.__name__
+        
+        # If no filtering is configured, or if this tool is in the enabled list
+        if ENABLED_TOOLS is None or tool_name in ENABLED_TOOLS:
+            # Apply the mcp.tool decorator
+            if annotations:
+                return mcp.tool(annotations=annotations)(func)
+            else:
+                return mcp.tool()(func)
+        else:
+            # Don't register this tool - return the function undecorated
+            return func
+    
+    return decorator
+
+
+@tool(
     annotations=ToolAnnotations(
         title="Get Sheet Data",
         readOnlyHint=True,
@@ -206,7 +265,7 @@ def get_sheet_data(spreadsheet_id: str,
 
     return result
 
-@mcp.tool(
+@tool(
     annotations=ToolAnnotations(
         title="Get Sheet Formulas",
         readOnlyHint=True,
@@ -246,7 +305,7 @@ def get_sheet_formulas(spreadsheet_id: str,
     formulas = result.get('values', [])
     return formulas
 
-@mcp.tool(
+@tool(
     annotations=ToolAnnotations(
         title="Update Cells",
         destructiveHint=True,
@@ -290,7 +349,7 @@ def update_cells(spreadsheet_id: str,
     return result
 
 
-@mcp.tool(
+@tool(
     annotations=ToolAnnotations(
         title="Batch Update Cells",
         destructiveHint=True,
@@ -337,7 +396,7 @@ def batch_update_cells(spreadsheet_id: str,
     return result
 
 
-@mcp.tool(
+@tool(
     annotations=ToolAnnotations(
         title="Add Rows",
         destructiveHint=True,
@@ -400,7 +459,7 @@ def add_rows(spreadsheet_id: str,
     return result
 
 
-@mcp.tool(
+@tool(
     annotations=ToolAnnotations(
         title="Add Columns",
         destructiveHint=True,
@@ -463,7 +522,7 @@ def add_columns(spreadsheet_id: str,
     return result
 
 
-@mcp.tool(
+@tool(
     annotations=ToolAnnotations(
         title="List Sheets",
         readOnlyHint=True,
@@ -490,7 +549,7 @@ def list_sheets(spreadsheet_id: str, ctx: Context = None) -> List[str]:
     return sheet_names
 
 
-@mcp.tool(
+@tool(
     annotations=ToolAnnotations(
         title="Copy Sheet",
         destructiveHint=True,
@@ -569,7 +628,7 @@ def copy_sheet(src_spreadsheet: str,
     return {"copy": copy_result}
 
 
-@mcp.tool(
+@tool(
     annotations=ToolAnnotations(
         title="Rename Sheet",
         destructiveHint=True,
@@ -628,7 +687,7 @@ def rename_sheet(spreadsheet: str,
     return result
 
 
-@mcp.tool(
+@tool(
     annotations=ToolAnnotations(
         title="Get Multiple Sheet Data",
         readOnlyHint=True,
@@ -681,7 +740,7 @@ def get_multiple_sheet_data(queries: List[Dict[str, str]],
     return results
 
 
-@mcp.tool(
+@tool(
     annotations=ToolAnnotations(
         title="Get Multiple Spreadsheet Summary",
         readOnlyHint=True,
@@ -809,7 +868,7 @@ def get_spreadsheet_info(spreadsheet_id: str) -> str:
     return json.dumps(info, indent=2)
 
 
-@mcp.tool(
+@tool(
     annotations=ToolAnnotations(
         title="Create Spreadsheet",
         destructiveHint=True,
@@ -857,7 +916,7 @@ def create_spreadsheet(title: str, folder_id: Optional[str] = None, ctx: Context
     }
 
 
-@mcp.tool(
+@tool(
     annotations=ToolAnnotations(
         title="Create Sheet",
         destructiveHint=True,
@@ -908,7 +967,7 @@ def create_sheet(spreadsheet_id: str,
     }
 
 
-@mcp.tool(
+@tool(
     annotations=ToolAnnotations(
         title="List Spreadsheets",
         readOnlyHint=True,
@@ -954,7 +1013,7 @@ def list_spreadsheets(folder_id: Optional[str] = None, ctx: Context = None) -> L
     return [{'id': sheet['id'], 'title': sheet['name']} for sheet in spreadsheets]
 
 
-@mcp.tool(
+@tool(
     annotations=ToolAnnotations(
         title="Share Spreadsheet",
         destructiveHint=True,
@@ -1038,7 +1097,7 @@ def share_spreadsheet(spreadsheet_id: str,
     return {"successes": successes, "failures": failures}
 
 
-@mcp.tool(
+@tool(
     annotations=ToolAnnotations(
         title="List Folders",
         readOnlyHint=True,
@@ -1093,7 +1152,7 @@ def list_folders(parent_folder_id: Optional[str] = None, ctx: Context = None) ->
 
 
 
-@mcp.tool(
+@tool(
     annotations=ToolAnnotations(
         title="Search Spreadsheets by Name or Content",
         readOnlyHint=True,
@@ -1162,7 +1221,7 @@ def _column_index_to_letter(index: int) -> str:
     return result
 
 
-@mcp.tool(
+@tool(
     annotations=ToolAnnotations(
         title="Find Cells",
         readOnlyHint=True,
@@ -1245,7 +1304,7 @@ def find_in_spreadsheet(spreadsheet_id: str,
         return [{'error': f'Search failed: {str(e)}'}]
 
 
-@mcp.tool(
+@tool(
     annotations=ToolAnnotations(
         title="Batch Update",
         destructiveHint=True,
@@ -1331,6 +1390,12 @@ def batch_update(spreadsheet_id: str,
 
 
 def main():
+    # Log tool filtering configuration if enabled
+    if ENABLED_TOOLS is not None:
+        print(f"Tool filtering enabled. Active tools: {', '.join(sorted(ENABLED_TOOLS))}")
+    else:
+        print("Tool filtering disabled. All tools are enabled.")
+    
     # Run the server
     transport = "stdio"
     for i, arg in enumerate(sys.argv):
