@@ -1178,7 +1178,9 @@ def _parse_a1_notation(range_str: str) -> Dict[str, int]:
         range_str: A1 notation range (e.g., 'A1:C10')
     
     Returns:
-        Dictionary with startRowIndex, endRowIndex, startColumnIndex, endColumnIndex
+        Dictionary containing applicable indices based on the range format.
+        May include: startRowIndex, endRowIndex, startColumnIndex, endColumnIndex.
+        Not all keys are present for all range formats (e.g., 'A:B' has no row indices).
     """
     import re
     
@@ -1508,37 +1510,61 @@ def add_chart(spreadsheet_id: str,
         **range_indices
     }
     
-    # Build chart specification
-    chart_spec = {
-        "basicChart": {
-            "chartType": chart_type,
-            "legendPosition": "RIGHT_LEGEND",
-            "axis": [],
-            "domains": [{
+    # Build chart specification based on chart type
+    # Note: For basic charts, using the same source_range for both domains and series
+    # allows the API to automatically interpret the first column as the domain (X-axis labels)
+    # and subsequent columns as data series (Y-axis values). This is the standard behavior
+    # for most chart types and works correctly for typical use cases.
+    if chart_type == "PIE":
+        # Pie charts use a different spec structure
+        chart_spec = {
+            "pieChart": {
+                "legendPosition": "RIGHT_LEGEND",
                 "domain": {
                     "sourceRange": {
                         "sources": [source_range]
                     }
-                }
-            }],
-            "series": [{
+                },
                 "series": {
                     "sourceRange": {
                         "sources": [source_range]
                     }
-                },
-                "targetAxis": "LEFT_AXIS"
-            }],
-            "headerCount": 1
+                }
+            }
         }
-    }
-    
-    # Add title if provided
-    if title:
-        chart_spec["title"] = title
-    
-    # Add axis labels if provided (for non-pie charts)
-    if chart_type != "PIE":
+        if title:
+            chart_spec["title"] = title
+    else:
+        # All other chart types use basicChart spec
+        chart_spec = {
+            "basicChart": {
+                "chartType": chart_type,
+                "legendPosition": "RIGHT_LEGEND",
+                "axis": [],
+                "domains": [{
+                    "domain": {
+                        "sourceRange": {
+                            "sources": [source_range]
+                        }
+                    }
+                }],
+                "series": [{
+                    "series": {
+                        "sourceRange": {
+                            "sources": [source_range]
+                        }
+                    },
+                    "targetAxis": "LEFT_AXIS"
+                }],
+                "headerCount": 1
+            }
+        }
+        
+        # Add title if provided
+        if title:
+            chart_spec["title"] = title
+        
+        # Add axis labels if provided
         if x_axis_label:
             chart_spec["basicChart"]["axis"].append({
                 "position": "BOTTOM_AXIS",
@@ -1558,26 +1584,6 @@ def add_chart(spreadsheet_id: str,
             chart_spec["basicChart"]["axis"].append({
                 "position": "LEFT_AXIS"
             })
-    
-    # For PIE charts, use pieChart spec instead of basicChart
-    if chart_type == "PIE":
-        chart_spec = {
-            "pieChart": {
-                "legendPosition": "RIGHT_LEGEND",
-                "domain": {
-                    "sourceRange": {
-                        "sources": [source_range]
-                    }
-                },
-                "series": {
-                    "sourceRange": {
-                        "sources": [source_range]
-                    }
-                }
-            }
-        }
-        if title:
-            chart_spec["title"] = title
     
     # Build the add chart request
     request_body = {
