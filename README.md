@@ -79,6 +79,10 @@ _Refer to the [ID Reference Guide](#-id-reference-guide) for more information ab
     *   Depending on the client you use, you might not need step 4 because the client can launch the server for you. But it's a good practice to test run step 4 anyway to make sure things are set up properly.
     *   ➡️ See [**Usage with Claude Desktop**](#-usage-with-claude-desktop) for examples.
 
+6.  **⚡ Optional: Enable Tool Filtering (Reduce Context Usage)**
+    *   By default, all 19 tools are enabled (~13K tokens). To reduce context usage, enable only the tools you need.
+    *   ➡️ See [**Tool Filtering**](#-tool-filtering-reduce-context-usage) for details.
+
 You're ready! Start issuing commands via your MCP client.
 
 ---
@@ -90,6 +94,87 @@ You're ready! Start issuing commands via your MCP client.
 *   **Flexible Authentication:** Supports **Service Accounts (recommended)**, OAuth 2.0, and direct credential injection via environment variables.
 *   **Easy Deployment:** Run instantly with `uvx` (zero-install feel) or clone for development using `uv`.
 *   **AI-Ready:** Designed for use with MCP-compatible clients, enabling natural language spreadsheet interaction.
+*   **Tool Filtering:** Reduce context window usage by enabling only the tools you need with `--include-tools` or `ENABLED_TOOLS` environment variable.
+
+---
+
+## 🎯 Tool Filtering (Reduce Context Usage)
+
+**Problem:** By default, this MCP server exposes all 19 tools, consuming ~13,000 tokens before any conversation begins. If you only need a few tools, this wastes valuable context window space.
+
+**Solution:** Use tool filtering to enable only the tools you actually use.
+
+### How to Enable Tool Filtering
+
+You can filter tools using either:
+
+1. **Command-line argument** `--include-tools`:
+   ```json
+   {
+     "mcpServers": {
+       "google-sheets": {
+         "command": "uvx",
+         "args": [
+           "mcp-google-sheets@latest",
+           "--include-tools",
+           "get_sheet_data,update_cells,list_spreadsheets,list_sheets"
+         ],
+         "env": {
+           "SERVICE_ACCOUNT_PATH": "/path/to/credentials.json"
+         }
+       }
+     }
+   }
+   ```
+
+2. **Environment variable** `ENABLED_TOOLS`:
+   ```json
+   {
+     "mcpServers": {
+       "google-sheets": {
+         "command": "uvx",
+         "args": ["mcp-google-sheets@latest"],
+         "env": {
+           "SERVICE_ACCOUNT_PATH": "/path/to/credentials.json",
+           "ENABLED_TOOLS": "get_sheet_data,update_cells,list_spreadsheets,list_sheets"
+         }
+       }
+     }
+   }
+   ```
+
+### Available Tool Names
+
+When filtering, use these exact tool names (comma-separated, no spaces):
+
+**Most Common Tools (recommended subset):**
+- `get_sheet_data` - Read from spreadsheets
+- `update_cells` - Write to spreadsheets
+- `list_spreadsheets` - Find spreadsheets
+- `list_sheets` - Navigate tabs
+
+**All Available Tools:**
+- `add_columns`
+- `add_rows`
+- `batch_update`
+- `batch_update_cells`
+- `copy_sheet`
+- `create_sheet`
+- `create_spreadsheet`
+- `find_in_spreadsheet`
+- `get_multiple_sheet_data`
+- `get_multiple_spreadsheet_summary`
+- `get_sheet_data`
+- `get_sheet_formulas`
+- `list_folders`
+- `list_sheets`
+- `list_spreadsheets`
+- `rename_sheet`
+- `search_spreadsheets`
+- `share_spreadsheet`
+- `update_cells`
+
+**Note:** If neither `--include-tools` nor `ENABLED_TOOLS` is specified, all tools are enabled (default behavior).
 
 ---
 
