@@ -172,6 +172,19 @@ _Refer to the [ID Reference Guide](#-id-reference-guide) for more information ab
     *   `sheet` (string): Current sheet/tab name (e.g., "Sheet1").
     *   `new_name` (string): New sheet/tab name (e.g., "Transactions").
     *   _Returns:_ Result of the operation ([`batchUpdate` response](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/batchUpdate#response-body)).
+*   **`add_chart`**: Creates a chart in a Google Spreadsheet from specified data.
+    *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
+    *   `sheet` (string): Name of the sheet/tab containing the data (e.g., "Sheet1").
+    *   `chart_type` (string): Type of chart to create. Options: `COLUMN` (vertical bars), `BAR` (horizontal bars), `LINE`, `AREA`, `PIE`, `SCATTER`, `COMBO`, `HISTOGRAM`.
+    *   `data_range` (string): A1 notation range for the chart data (e.g., "A1:C10"). First row is treated as headers.
+    *   `title` (optional string): Chart title.
+    *   `x_axis_label` (optional string): Label for the X axis (bottom axis). Not applicable for pie charts.
+    *   `y_axis_label` (optional string): Label for the Y axis (left axis). Not applicable for pie charts.
+    *   `position_x` (optional integer, default `0`): Horizontal position offset in pixels from the top-left corner.
+    *   `position_y` (optional integer, default `0`): Vertical position offset in pixels from the top-left corner.
+    *   `width` (optional integer, default `600`): Width of the chart in pixels.
+    *   `height` (optional integer, default `400`): Height of the chart in pixels.
+    *   _Returns:_ Result object with success status, chart ID, and operation details.
 
 **MCP Resources:**
 
@@ -506,6 +519,9 @@ Once connected, try prompts like:
 *   "Append these rows to the 'Log' sheet in spreadsheet `XYZ`: `[['2024-07-31', 'Task A Completed'], ['2024-08-01', 'Task B Started']]`"
 *   "Get a summary of the spreadsheets 'Sales Data' and 'Inventory Count'."
 *   "Share the 'Team Vacation Schedule' spreadsheet with `team@example.com` as a reader and `manager@example.com` as a writer. Don't send notifications."
+*   "Create a column chart in my 'Sales Report' spreadsheet showing monthly revenue from data in range A1:B13."
+*   "Add a pie chart to the 'Market Analysis' sheet with data from A1:B5 titled 'Market Share by Product'."
+*   "In spreadsheet `abc123`, create a line chart on Sheet1 from range A1:C10 with title 'Growth Trends' and labels 'Month' and 'Revenue'."
 
 ---
 
