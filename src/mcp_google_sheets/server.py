@@ -1389,6 +1389,193 @@ def batch_update(spreadsheet_id: str,
     return result
 
 
+@tool(
+    annotations=ToolAnnotations(
+        title="List Comments",
+        readOnlyHint=True,
+    ),
+)
+def list_comments(spreadsheet_id: str,
+                  include_resolved: bool = False,
+                  max_results: int = 100,
+                  ctx: Context = None) -> Dict[str, Any]:
+    """
+    List all comments on a Google Spreadsheet, including replies and cell anchors.
+    Uses the Google Drive API comments endpoint.
+
+    Args:
+        spreadsheet_id: The ID of the spreadsheet (found in the URL)
+        include_resolved: If True, includes resolved comments. Default is False (only open comments).
+        max_results: Maximum number of comments to return (default 100, max 100 per page)
+
+    Returns:
+        Dictionary with a list of comments, each containing author, content,
+        quoted cell content, resolved status, creation time, and any replies.
+    """
+    drive_service = ctx.request_context.lifespan_context.drive_service
+
+    comments = []
+    page_token = None
+    remaining = max_results
+
+    while remaining > 0:
+        page_size = min(remaining, 100)
+
+        response = drive_service.comments().list(
+            fileId=spreadsheet_id,
+            fields='comments(id,content,anchor,quotedFileContent,'
+                   'author(displayName,emailAddress),'
+                   'createdTime,modifiedTime,resolved,'
+                   'replies(id,content,author(displayName,emailAddress),'
+                   'createdTime,modifiedTime)),nextPageToken',
+            pageSize=page_size,
+            pageToken=page_token,
+            includeDeleted=False
+        ).execute()
+
+        for comment in response.get('comments', []):
+            # Skip resolved comments unless explicitly requested
+            if not include_resolved and comment.get('resolved', False):
+                continue
+
+            # Extract quoted cell content (the text the comment was placed on)
+            quoted = comment.get('quotedFileContent', {})
+            quoted_value = quoted.get('value', '') if quoted else ''
+
+            author = comment.get('author', {})
+            formatted_comment = {
+                'id': comment.get('id'),
+                'author': author.get('displayName', 'Unknown'),
+                'author_email': author.get('emailAddress', ''),
+                'content': comment.get('content', ''),
+                'quoted_content': quoted_value,
+                'created_time': comment.get('createdTime'),
+                'modified_time': comment.get('modifiedTime'),
+                'resolved': comment.get('resolved', False),
+                'replies': []
+            }
+
+            for reply in comment.get('replies', []):
+                reply_author = reply.get('author', {})
+                formatted_comment['replies'].append({
+                    'id': reply.get('id'),
+                    'author': reply_author.get('displayName', 'Unknown'),
+                    'author_email': reply_author.get('emailAddress', ''),
+                    'content': reply.get('content', ''),
+                    'created_time': reply.get('createdTime'),
+                    'modified_time': reply.get('modifiedTime'),
+                })
+
+            comments.append(formatted_comment)
+            remaining -= 1
+            if remaining <= 0:
+                break
+
+        page_token = response.get('nextPageToken')
+        if not page_token:
+            break
+
+    return {
+        'spreadsheet_id': spreadsheet_id,
+        'total_comments': len(comments),
+        'comments': comments
+    }
+
+
+@tool(
+    annotations=ToolAnnotations(
+        title="Add Comment",
+        destructiveHint=True,
+    ),
+)
+def add_comment(spreadsheet_id: str,
+                content: str,
+                cell: Optional[str] = None,
+                ctx: Context = None) -> Dict[str, Any]:
+    """
+    Add a comment to a Google Spreadsheet. Optionally anchor it to a specific cell.
+    Uses the Google Drive API comments endpoint.
+
+    Args:
+        spreadsheet_id: The ID of the spreadsheet (found in the URL)
+        content: The text content of the comment
+        cell: Optional cell reference in A1 notation with sheet name (e.g., 'Sheet1!A1').
+              If not provided, the comment is added to the file without a cell anchor.
+
+    Returns:
+        The created comment with its ID, author, and timestamp
+    """
+    drive_service = ctx.request_context.lifespan_context.drive_service
+
+    body: Dict[str, Any] = {
+        'content': content
+    }
+
+    # Add cell anchor if provided
+    if cell:
+        body['anchor'] = json.dumps({
+            'type': 'workbook-range',
+            'range': cell
+        })
+
+    result = drive_service.comments().create(
+        fileId=spreadsheet_id,
+        body=body,
+        fields='id,content,anchor,author(displayName,emailAddress),createdTime'
+    ).execute()
+
+    author = result.get('author', {})
+    return {
+        'id': result.get('id'),
+        'author': author.get('displayName', 'Unknown'),
+        'author_email': author.get('emailAddress', ''),
+        'content': result.get('content', ''),
+        'cell': cell,
+        'created_time': result.get('createdTime'),
+    }
+
+
+@tool(
+    annotations=ToolAnnotations(
+        title="Resolve Comment",
+        destructiveHint=True,
+    ),
+)
+def resolve_comment(spreadsheet_id: str,
+                    comment_id: str,
+                    ctx: Context = None) -> Dict[str, Any]:
+    """
+    Resolve (close) a comment on a Google Spreadsheet.
+    Uses the Google Drive API to add an empty reply with the 'resolve' action.
+
+    Args:
+        spreadsheet_id: The ID of the spreadsheet (found in the URL)
+        comment_id: The ID of the comment to resolve (from list_comments)
+
+    Returns:
+        Result of the resolve operation
+    """
+    drive_service = ctx.request_context.lifespan_context.drive_service
+
+    # Resolving a comment is done by creating a reply with action='resolve'
+    result = drive_service.replies().create(
+        fileId=spreadsheet_id,
+        commentId=comment_id,
+        body={
+            'content': '',
+            'action': 'resolve'
+        },
+        fields='id,content,author(displayName,emailAddress),createdTime'
+    ).execute()
+
+    return {
+        'comment_id': comment_id,
+        'resolved': True,
+        'resolved_by': result.get('author', {}).get('displayName', 'Unknown'),
+        'resolved_at': result.get('createdTime'),
+    }
+
+
 def main():
     # Log tool filtering configuration if enabled
     if ENABLED_TOOLS is not None:
