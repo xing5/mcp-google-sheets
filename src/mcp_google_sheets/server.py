@@ -49,9 +49,16 @@ if _enabled_tools_str:
 else:
     ENABLED_TOOLS = None
 
-def _build_range(sheet: str, range_spec: Optional[str] = None) -> str:
-    """Build A1 notation range string from sheet name and optional range."""
-    return f"{sheet}!{range_spec}" if range_spec else sheet
+def _setup_sheets_api_call(ctx: Context, sheet: str, range_spec: Optional[str] = None) -> tuple:
+    """
+    Setup common parameters for Sheets API calls.
+
+    Returns:
+        tuple: (sheets_service, full_range)
+    """
+    sheets_service = ctx.request_context.lifespan_context.sheets_service
+    full_range = f"{sheet}!{range_spec}" if range_spec else sheet
+    return sheets_service, full_range
 
 @dataclass
 class SpreadsheetContext:
@@ -219,9 +226,7 @@ def get_sheet_data(spreadsheet_id: str,
     Returns:
         Grid data structure with either full metadata or just values from Google Sheets API, depending on include_grid_data parameter
     """
-    sheets_service = ctx.request_context.lifespan_context.sheets_service
-
-    full_range = _build_range(sheet, range)
+    sheets_service, full_range = _setup_sheets_api_call(ctx, sheet, range)
 
     if include_grid_data:
         # Use full API to get all grid data including formatting
@@ -269,9 +274,7 @@ def get_sheet_formulas(spreadsheet_id: str,
     Returns:
         A 2D array of the sheet formulas.
     """
-    sheets_service = ctx.request_context.lifespan_context.sheets_service
-
-    full_range = _build_range(sheet, range)
+    sheets_service, full_range = _setup_sheets_api_call(ctx, sheet, range)
 
     # Call the Sheets API
     formula_response = sheets_service.spreadsheets().values().get(
@@ -307,9 +310,7 @@ def update_cells(spreadsheet_id: str,
     Returns:
         Result of the update operation
     """
-    sheets_service = ctx.request_context.lifespan_context.sheets_service
-
-    full_range = _build_range(sheet, range)
+    sheets_service, full_range = _setup_sheets_api_call(ctx, sheet, range)
 
     # Prepare the value range object
     value_range_body = {
@@ -355,7 +356,7 @@ def batch_update_cells(spreadsheet_id: str,
     value_range_updates = []
     for range_str, values in ranges.items():
         value_range_updates.append({
-            'range': _build_range(sheet, range_str),
+            'range': f"{sheet}!{range_str}" if range_str else sheet,
             'values': values
         })
 
@@ -701,7 +702,7 @@ def get_multiple_sheet_data(queries: List[Dict[str, str]],
             # Call the Sheets API
             range_response = sheets_service.spreadsheets().values().get(
                 spreadsheetId=spreadsheet_id,
-                range=_build_range(sheet, range_str)
+                range=f"{sheet}!{range_str}" if range_str else sheet
             ).execute()
 
             # Get the values from the response
