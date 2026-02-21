@@ -33,3 +33,10 @@ fallback-version = "0.0.0"
 
 [project.scripts]
 mcp-google-sheets = "mcp_google_sheets:main"
+
+[tool.ruff.lint]
+select = ["PLR", "C901"]
+
+[tool.ruff.lint.pylint]
+max-branches = 10
+max-statements = 50
