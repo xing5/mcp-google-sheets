@@ -13,3 +13,6 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Gourmand AI
+.gourmand-cache/
