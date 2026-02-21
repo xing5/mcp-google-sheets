@@ -1,0 +1,56 @@
+# Gourmand Exceptions
+#
+# This file documents code quality exceptions that are justified
+# for this project. Each exception should include:
+# - Rule being excepted
+# - Location (file/function)
+# - Justification explaining why the code is correct as-is
+
+[[exception]]
+rule = "copy_paste_detection"
+location = "src/mcp_google_sheets/server.py"
+functions = ["get_sheet_data", "get_sheet_formulas", "update_cells"]
+justification = """
+These MCP tool functions have intentionally similar structure:
+1. Extract service from context: `sheets_service = ctx.request_context.lifespan_context.sheets_service`
+2. Build range: `full_range = _build_range(sheet, range)`
+3. Call appropriate Google Sheets API method with different parameters
+
+The similarity is a necessary pattern for MCP tools. Each function:
+- Serves a distinct purpose (get data, get formulas, update cells)
+- Calls different API methods with different options
+- Returns different result types
+
+Extracting further would create an over-abstracted "generic Sheets API call"
+function that would be harder to understand and maintain. The current structure
+follows MCP best practices for tool implementation.
+"""
+
+[[exception]]
+rule = "copy_paste_detection"
+location = "src/mcp_google_sheets/server.py"
+description = "Duplicate code cluster in share_spreadsheet and similar functions"
+justification = """
+Functions that interact with Google Drive API (share_spreadsheet, etc.) follow
+the same pattern of iterating through lists and handling per-item errors.
+This is the standard error handling pattern for batch operations where:
+- Each item can succeed or fail independently
+- Partial success is acceptable
+- All errors must be reported back to the user
+
+The pattern is:
+```python
+successes = []
+failures = []
+for item in items:
+    try:
+        # operation
+        successes.append(result)
+    except Exception as e:
+        failures.append(error_details)
+return {"successes": successes, "failures": failures}
+```
+
+This is the correct implementation for batch operations in MCP tools and should
+not be "DRYed up" as it would make the specific operation logic less clear.
+"""
