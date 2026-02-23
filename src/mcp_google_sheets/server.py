@@ -390,35 +390,76 @@ def get_sheet_data(spreadsheet_id: str,
 def get_sheet_formulas(spreadsheet_id: str,
                        sheet: str,
                        range: Optional[str] = None,
+                       format: str = 'A1',
                        ctx: Context = None) -> List[List[Any]]:
     """
     Get formulas from a specific sheet in a Google Spreadsheet.
-    
+
     Args:
         spreadsheet_id: The ID of the spreadsheet (found in the URL)
         sheet: The name of the sheet
         range: Optional cell range in A1 notation (e.g., 'A1:C10'). If not provided, gets all formulas from the sheet.
-    
+        format: Formula notation format. Either 'A1' (default) or 'R1C1'.
+                'A1' returns formulas like =SUM(A1:A3).
+                'R1C1' returns formulas like =SUM(R[-2]C:RC) for identifying unique formula patterns.
+
     Returns:
         A 2D array of the sheet formulas.
     """
+    # Validate format parameter
+    if format not in ('A1', 'R1C1'):
+        raise ValueError(f"format must be 'A1' or 'R1C1', got '{format}'")
+
     sheets_service = ctx.request_context.lifespan_context.sheets_service
-    
+
     # Construct the range
     if range:
         full_range = f"{sheet}!{range}"
     else:
         full_range = sheet  # Get all formulas in the specified sheet
-    
+
     # Call the Sheets API
     result = sheets_service.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
         range=full_range,
         valueRenderOption='FORMULA'  # Request formulas
     ).execute()
-    
+
     # Get the formulas from the response
     formulas = result.get('values', [])
+
+    # Convert to R1C1 if requested
+    if format == 'R1C1':
+        # Parse the range to determine starting row/column
+        # Extract starting position from full_range
+        # Format: "Sheet1!B1:B10" or "Sheet1!B1" or "Sheet1"
+        range_match = re.search(r'!([A-Z]+)(\d+)', full_range)
+        if range_match:
+            start_col_letter = range_match.group(1)
+            start_row = int(range_match.group(2))
+            start_col = COLUMN_LUT.get(start_col_letter, _column_letter_to_number(start_col_letter))
+        else:
+            # If no range specified, assume starting at A1
+            start_row = 1
+            start_col = 1
+
+        # Convert each formula
+        converted_formulas = []
+        for row_idx, row in enumerate(formulas):
+            converted_row = []
+            for col_idx, cell_value in enumerate(row):
+                if isinstance(cell_value, str) and cell_value.startswith('='):
+                    current_row = start_row + row_idx
+                    current_col = start_col + col_idx
+                    converted_formula = _a1_to_r1c1(cell_value, current_row, current_col)
+                    converted_row.append(converted_formula)
+                else:
+                    # Not a formula, keep as-is
+                    converted_row.append(cell_value)
+            converted_formulas.append(converted_row)
+
+        return converted_formulas
+
     return formulas
 
 @tool(
