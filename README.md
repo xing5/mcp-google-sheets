@@ -203,7 +203,31 @@ _Refer to the [ID Reference Guide](#-id-reference-guide) for more information ab
     *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
     *   `sheet` (string): Name of the sheet/tab (e.g., "Sheet1").
     *   `range` (optional string): A1 notation (e.g., `'A1:C10'`, `'Sheet1!B2:D'`). If omitted, reads all formulas in the sheet/tab specified by `sheet`.
+    *   `format` (optional string, default `'A1'`): Formula notation format.
+        *   `'A1'`: Returns formulas in A1 notation (e.g., `=SUM(A1:A3)`, `=B2*2`)
+        *   `'R1C1'`: Returns formulas in R1C1 notation (e.g., `=SUM(R[-2]C:RC)`, `=RC[-1]*2`)
+        *   R1C1 format is useful for identifying unique formula patterns across ranges, as relative references normalize to the same pattern regardless of cell position.
     *   _Returns:_ 2D array of cell formulas (array of arrays) ([`values.get` response](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values/get#response-body)).
+
+    **Example:**
+    ```python
+    # Get formulas in A1 notation (default)
+    formulas = get_sheet_formulas('spreadsheet-id', 'Sheet1', 'B1:B10')
+    # Returns: [['=SUM(A1:A3)'], ['=A2*2'], ...]
+
+    # Get formulas in R1C1 notation for pattern analysis
+    formulas_r1c1 = get_sheet_formulas('spreadsheet-id', 'Sheet1', 'B1:B10', format='R1C1')
+    # Returns: [['=SUM(RC[-1]:R[2]C[-1])'], ['=RC[-1]*2'], ...]
+
+    # Use R1C1 to identify unique formula patterns
+    from collections import defaultdict
+    formula_patterns = defaultdict(list)
+    for row_idx, row in enumerate(formulas_r1c1):
+        for col_idx, formula in enumerate(row):
+            if formula.startswith('='):
+                formula_patterns[formula].append((row_idx, col_idx))
+    # Now formula_patterns maps unique formulas to their locations
+    ```
 *   **`update_cells`**: Writes data to a specific range. Overwrites existing data.
     *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
     *   `sheet` (string): Name of the sheet/tab (e.g., "Sheet1").
