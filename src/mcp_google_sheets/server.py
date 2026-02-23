@@ -6,6 +6,7 @@ A Model Context Protocol (MCP) server built with FastMCP for interacting with Go
 
 import base64
 import os
+import re
 import sys
 from typing import List, Dict, Any, Optional, Union
 import json
@@ -32,6 +33,7 @@ TOKEN_PATH = os.environ.get('TOKEN_PATH', 'token.json')
 CREDENTIALS_PATH = os.environ.get('CREDENTIALS_PATH', 'credentials.json')
 SERVICE_ACCOUNT_PATH = os.environ.get('SERVICE_ACCOUNT_PATH', 'service_account.json')
 DRIVE_FOLDER_ID = os.environ.get('DRIVE_FOLDER_ID', '')  # Working directory in Google Drive
+USER_ACCESS_TOKEN = os.environ.get('USER_ACCESS_TOKEN')  # External OAuth token for token relay mode
 
 # Tool filtering configuration
 # Parse enabled tools from environment variable or command-line argument
@@ -61,6 +63,107 @@ def _parse_enabled_tools() -> Optional[set]:
 
 ENABLED_TOOLS = _parse_enabled_tools()
 
+# ============================================================================
+# A1 to R1C1 Conversion Utilities
+# ============================================================================
+
+def _column_letter_to_number(col: str) -> int:
+    """
+    Convert column letter(s) to number (A=1, Z=26, AA=27, etc.).
+
+    Args:
+        col: Column letter(s) in uppercase (e.g., 'A', 'Z', 'AA')
+
+    Returns:
+        Column number (1-indexed)
+    """
+    num = 0
+    for char in col:
+        num = num * 26 + (ord(char) - ord('A') + 1)
+    return num
+
+
+def _build_column_lut(max_col: int = 1000) -> dict:
+    """
+    Build lookup table for column letters to numbers.
+
+    Args:
+        max_col: Maximum column number to include in LUT
+
+    Returns:
+        Dictionary mapping column letters to numbers
+    """
+    lut = {}
+    for i in range(1, max_col + 1):
+        col_letter = ""
+        num = i
+        while num > 0:
+            num -= 1
+            col_letter = chr(num % 26 + ord('A')) + col_letter
+            num //= 26
+        lut[col_letter] = i
+    return lut
+
+
+# Pre-build column lookup table at module load (covers columns A-ALL = 1000 columns)
+COLUMN_LUT = _build_column_lut(1000)
+
+# Pre-compile regex pattern for cell references (performance optimization)
+CELL_REF_PATTERN = re.compile(r"(?:([^!]+!))?(\$)?([A-Z]+)(\$)?(\d+)")
+
+
+def _a1_to_r1c1(formula: str, current_row: int, current_col: int) -> str:
+    """
+    Convert formula from A1 notation to R1C1 notation.
+
+    Args:
+        formula: Formula string in A1 notation (e.g., "=SUM(A1:B5)")
+        current_row: 1-based row number of the cell containing this formula
+        current_col: 1-based column number of the cell containing this formula
+
+    Returns:
+        Formula in R1C1 notation (e.g., "=SUM(R[-4]C[-1]:RC[0])")
+
+    Examples:
+        >>> _a1_to_r1c1('=A1', 2, 2)
+        '=R[-1]C[-1]'
+        >>> _a1_to_r1c1('=$A$1', 2, 2)
+        '=R1C1'
+    """
+    def replace_cell_ref(match):
+        sheet_prefix = match.group(1) or ''
+        col_abs = match.group(2)  # $ before column
+        col_letters = match.group(3)
+        row_abs = match.group(4)  # $ before row
+        row_num = match.group(5)
+
+        # Use LUT for column conversion (fallback to computed for ultra-wide sheets)
+        col_num = COLUMN_LUT.get(col_letters, _column_letter_to_number(col_letters))
+        row = int(row_num)
+
+        # Build R1C1 notation
+        if row_abs:
+            row_part = f"R{row}"
+        else:
+            offset = row - current_row
+            if offset == 0:
+                row_part = "R"
+            else:
+                row_part = f"R[{offset}]"
+
+        if col_abs:
+            col_part = f"C{col_num}"
+        else:
+            offset = col_num - current_col
+            if offset == 0:
+                col_part = "C"
+            else:
+                col_part = f"C[{offset}]"
+
+        return f"{sheet_prefix}{row_part}{col_part}"
+
+    return CELL_REF_PATTERN.sub(replace_cell_ref, formula)
+
 @dataclass
 class SpreadsheetContext:
     """Context for Google Spreadsheet service"""
@@ -75,7 +178,20 @@ async def spreadsheet_lifespan(server: FastMCP) -> AsyncIterator[SpreadsheetCont
     # Authenticate and build the service
     creds = None
 
-    if CREDENTIALS_CONFIG:
+    # Check for external OAuth token (Token Relay Mode) - highest priority
+    # This allows end-user authentication in containerized/OpenShift environments
+    if USER_ACCESS_TOKEN:
+        try:
+            print("Using external OAuth token (Token Relay Mode)")
+            # Create credentials from the provided access token
+            creds = Credentials(token=USER_ACCESS_TOKEN)
+            # Note: Token validation happens on first API call
+            # The caller is responsible for token refresh
+        except Exception as e:
+            print(f"Error using external access token: {e}")
+            creds = None
+
+    if not creds and CREDENTIALS_CONFIG:
         creds = service_account.Credentials.from_service_account_info(json.loads(base64.b64decode(CREDENTIALS_CONFIG)), scopes=SCOPES)
     
     # Check for explicit service account authentication first (custom SERVICE_ACCOUNT_PATH)
