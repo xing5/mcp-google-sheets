@@ -162,7 +162,6 @@ When filtering, use these exact tool names (comma-separated, no spaces):
 - `create_sheet`
 - `create_spreadsheet`
 - `find_in_spreadsheet`
-- `get_multiple_sheet_data`
 - `get_multiple_spreadsheet_summary`
 - `get_sheet_data`
 - `get_sheet_formulas`
@@ -193,17 +192,57 @@ _Refer to the [ID Reference Guide](#-id-reference-guide) for more information ab
     *   `title` (string): The desired title for the spreadsheet. Example: "Quarterly Report Q4".
     *   `folder_id` (optional string): Google Drive folder ID where the spreadsheet should be created. Get from its URL. If omitted, uses configured default or root.
     *   _Returns:_ Object with spreadsheet info, including `spreadsheetId`, `title`, and `folder`.
-*   **`get_sheet_data`**: Reads data from a range in a sheet/tab.
+*   **`get_sheet_data`**: Reads data from one or more ranges in a SINGLE spreadsheet. **Supports batching** - multiple ranges are fetched in a single API call (5-10x faster than separate calls).
     *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
-    *   `sheet` (string): Name of the sheet/tab (e.g., "Sheet1").
-    *   `range` (optional string): A1 notation (e.g., `'A1:C10'`, `'Sheet1!B2:D'`). If omitted, reads the whole sheet/tab specified by `sheet`.
-    *   `include_grid_data` (optional boolean, default `False`): If `True`, returns full grid data including formatting and metadata (much larger). If `False`, returns values only (more efficient).
-    *   _Returns:_ If `include_grid_data=True`, full grid data with metadata ([`get` response](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/get#response-body)). If `False`, a values result object from the Values API ([`values.get` response](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values/get#response-body)).
-*   **`get_sheet_formulas`**: Reads formulas from a range in a sheet/tab.
+    *   `ranges` (string or array of strings): Either a single range or multiple ranges in A1 notation with sheet name.
+        *   Single range: `"Sheet1!A1:B10"` or just `"Sheet1"` for entire sheet
+        *   Multiple ranges (batched): `["Sheet1!A1:B10", "Sheet2!C1:D20", "Data!E:F"]`
+        *   **Note:** All ranges must be from the SAME spreadsheet. For multiple different spreadsheets, call this tool separately for each.
+    *   _Returns:_ Dictionary with `spreadsheetId` and `valueRanges` (array of results). Each result has `range` and `values` (2D array).
+
+    **Examples:**
+    ```python
+    # Single range
+    data = get_sheet_data("spreadsheet-id", "Sheet1!A1:B10")
+
+    # Multiple ranges - BATCHED in one API call (recommended for multiple ranges)
+    data = get_sheet_data("spreadsheet-id", ["Sheet1!A1:B10", "Sheet2!C1:D20"])
+
+    # Entire sheets
+    data = get_sheet_data("spreadsheet-id", ["Sales", "Inventory", "Reports"])
+    ```
+*   **`get_sheet_formulas`**: Reads formulas from one or more ranges in a SINGLE spreadsheet. **Supports batching** - multiple ranges are fetched in a single API call (5-10x faster than separate calls).
     *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
-    *   `sheet` (string): Name of the sheet/tab (e.g., "Sheet1").
-    *   `range` (optional string): A1 notation (e.g., `'A1:C10'`, `'Sheet1!B2:D'`). If omitted, reads all formulas in the sheet/tab specified by `sheet`.
-    *   _Returns:_ 2D array of cell formulas (array of arrays) ([`values.get` response](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values/get#response-body)).
+    *   `ranges` (string or array of strings): Either a single range or multiple ranges in A1 notation with sheet name.
+        *   Single range: `"Sheet1!A1:C10"` or just `"Sheet1"` for entire sheet
+        *   Multiple ranges (batched): `["Sheet1!B:B", "Sheet2!C:C", "Sheet3!D:D"]`
+        *   **Note:** All ranges must be from the SAME spreadsheet. For multiple different spreadsheets, call this tool separately for each.
+    *   `format` (optional string, default `'A1'`): Formula notation format.
+        *   `'A1'`: Returns formulas in A1 notation (e.g., `=SUM(A1:A3)`, `=B2*2`)
+        *   `'R1C1'`: Returns formulas in R1C1 notation (e.g., `=SUM(R[-2]C:RC)`, `=RC[-1]*2`)
+        *   R1C1 format is useful for identifying unique formula patterns across ranges, as relative references normalize to the same pattern regardless of cell position.
+    *   _Returns:_ Dictionary with `spreadsheetId` and `valueRanges` (array of results). Each result has `range` and `values` (2D array of formulas).
+
+    **Examples:**
+    ```python
+    # Single range - formulas in A1 notation (default)
+    data = get_sheet_formulas('spreadsheet-id', 'Sheet1!B1:B10')
+    # Returns: {valueRanges: [{range: "Sheet1!B1:B10", values: [['=SUM(A1:A3)'], ...]}]}
+
+    # Multiple ranges - BATCHED, with R1C1 for pattern analysis
+    data = get_sheet_formulas('spreadsheet-id', ['Sheet1!B:B', 'Sheet2!C:C'], format='R1C1')
+    # Returns: {valueRanges: [{range: "Sheet1!B:B", values: [['=SUM(RC[-1]:R[2]C[-1])'], ...]}, ...]}
+
+    # Use R1C1 to identify unique formula patterns across sheets
+    from collections import defaultdict
+    formula_patterns = defaultdict(list)
+    for vr in data['valueRanges']:
+        for row_idx, row in enumerate(vr['values']):
+            for col_idx, formula in enumerate(row):
+                if formula.startswith('='):
+                    formula_patterns[formula].append((vr['range'], row_idx, col_idx))
+    # Now formula_patterns maps unique formulas to their locations across all sheets
+    ```
 *   **`update_cells`**: Writes data to a specific range. Overwrites existing data.
     *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
     *   `sheet` (string): Name of the sheet/tab (e.g., "Sheet1").
@@ -228,9 +267,6 @@ _Refer to the [ID Reference Guide](#-id-reference-guide) for more information ab
     *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
     *   `title` (string): Name for the new sheet/tab.
     *   _Returns:_ New sheet properties object.
-*   **`get_multiple_sheet_data`**: Fetches data from multiple ranges across potentially different spreadsheets in one call.
-    *   `queries` (array of objects): Each object needs `spreadsheet_id`, `sheet`, and `range`. Example: `[{"spreadsheet_id": "abc", "sheet": "Sheet1", "range": "A1:B2"}, ...]`.
-    *   _Returns:_ List of objects, each containing the query params and fetched `data` or an `error`. Each `data` is a [`values.get` response](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values/get#response-body).
 *   **`get_multiple_spreadsheet_summary`**: Gets titles, sheet/tab names, headers, and first few rows for multiple spreadsheets.
     *   `spreadsheet_ids` (array of strings): IDs of the spreadsheets (from their URLs).
     *   `rows_to_fetch` (optional integer, default `5`): How many rows (including header) to preview. Example: `5`.
@@ -314,6 +350,18 @@ _Refer to the [ID Reference Guide](#-id-reference-guide) for more information ab
         *   `CREDENTIALS_PATH`: Path to the downloaded OAuth credentials JSON file (default: `credentials.json`).
         *   `TOKEN_PATH`: Path to store the user's refresh token after first login (default: `token.json`). Must be writable.
 
+### Method B2: Token Relay Mode (OpenShift/Kubernetes + End User Auth) 🚢
+
+*   **Why?** Perfect for containerized deployments (OpenShift, Kubernetes) where you need end-user authentication but can't use interactive browser flows. Your frontend handles OAuth, and passes tokens to the MCP server.
+*   **Use Case:** OpenShift/Kubernetes deployments with frontend applications that need to relay end-user identity.
+*   **Steps:**
+    1.  **Frontend OAuth:** Your frontend app (React, Vue, Angular, etc.) handles the OAuth flow and obtains user access tokens.
+    2.  **Pass Token to MCP:** Frontend passes the access token to MCP server via environment variable.
+    3.  **Set Environment Variable:**
+        *   `USER_ACCESS_TOKEN`: OAuth access token obtained by your frontend application.
+    4.  **Token Refresh:** Your frontend is responsible for refreshing tokens (they expire in ~1 hour).
+*   **📖 Full Guide:** See [Token Relay Mode Documentation](docs/TOKEN_RELAY_MODE.md) for complete setup instructions, frontend examples (JavaScript, Python), OpenShift deployment manifests, and security best practices.
+
 ### Method C: Direct Credential Injection (Advanced) 🔒
 
 *   **Why?** Useful in environments like Docker, Kubernetes, or CI/CD where managing files is hard, but environment variables are easy/secure. Avoids file system access.
@@ -359,15 +407,17 @@ _Refer to the [ID Reference Guide](#-id-reference-guide) for more information ab
 
 The server checks for credentials in this order:
 
-1.  `CREDENTIALS_CONFIG` (Base64 content)
-2.  `SERVICE_ACCOUNT_PATH` (Path to Service Account JSON)
-3.  `CREDENTIALS_PATH` (Path to OAuth JSON) - triggers interactive flow if token is missing/expired
-4.  **Application Default Credentials (ADC)** - automatic fallback
+1.  `USER_ACCESS_TOKEN` (External OAuth token - **Token Relay Mode**)
+2.  `CREDENTIALS_CONFIG` (Base64 content)
+3.  `SERVICE_ACCOUNT_PATH` (Path to Service Account JSON)
+4.  `CREDENTIALS_PATH` (Path to OAuth JSON) - triggers interactive flow if token is missing/expired
+5.  **Application Default Credentials (ADC)** - automatic fallback
 
 **Environment Variable Summary:**
 
 | Variable                         | Method(s)                   | Description                                                      | Default            |
 |:---------------------------------|:----------------------------|:-----------------------------------------------------------------|:-------------------|
+| `USER_ACCESS_TOKEN`              | Token Relay                 | OAuth access token from external source (frontend app). Enables end-user auth in containers. | -                  |
 | `SERVICE_ACCOUNT_PATH`           | Service Account             | Path to the Service Account JSON key file (MCP server specific). | -                  |
 | `GOOGLE_APPLICATION_CREDENTIALS` | ADC                         | Path to service account key (Google's standard variable).        | -                  |
 | `DRIVE_FOLDER_ID`                | Service Account             | ID of the Google Drive folder shared with the Service Account.   | -                  |
