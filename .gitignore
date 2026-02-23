@@ -16,3 +16,6 @@ wheels/
 
 # Gourmand AI
 .gourmand-cache/
+
+# Git worktrees
+.worktrees/
