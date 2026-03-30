@@ -647,3 +647,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 *   Built with [FastMCP](https://github.com/cognitiveapis/fastmcp).
 *   Inspired by [kazz187/mcp-google-spreadsheet](https://github.com/kazz187/mcp-google-spreadsheet).
 *   Uses Google API Python Client libraries.
+
+## Hosted deployment
+
+A hosted deployment is available on [Fronteir AI](https://fronteir.ai/mcp/xing5-mcp-google-sheets).
+
