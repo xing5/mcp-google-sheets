@@ -5,6 +5,7 @@ A Model Context Protocol (MCP) server built with FastMCP for interacting with Go
 """
 
 import base64
+import logging
 import os
 import sys
 from typing import List, Dict, Any, Optional, Union
@@ -24,6 +25,10 @@ from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 import google.auth
+
+# Logging setup (stderr, preserves MCP stdio JSON-RPC framing)
+logging.basicConfig(level=logging.INFO, stream=sys.stderr, format='%(message)s')
+logger = logging.getLogger(__name__)
 
 # Constants
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
@@ -86,15 +91,15 @@ async def spreadsheet_lifespan(server: FastMCP) -> AsyncIterator[SpreadsheetCont
                 SERVICE_ACCOUNT_PATH,
                 scopes=SCOPES
             )
-            print("Using service account authentication")
-            print(f"Working with Google Drive folder ID: {DRIVE_FOLDER_ID or 'Not specified'}")
+            logger.info("Using service account authentication")
+            logger.info("Working with Google Drive folder ID: %s", DRIVE_FOLDER_ID or "Not specified")
         except Exception as e:
-            print(f"Error using service account authentication: {e}")
+            logger.error("Error using service account authentication: %s", e)
             creds = None
     
     # Fall back to OAuth flow if service account auth failed or not configured
     if not creds:
-        print("Trying OAuth authentication flow")
+        logger.info("Trying OAuth authentication flow")
         if os.path.exists(TOKEN_PATH):
             with open(TOKEN_PATH, 'r') as token:
                 creds = Credentials.from_authorized_user_info(json.load(token), SCOPES)
@@ -103,15 +108,15 @@ async def spreadsheet_lifespan(server: FastMCP) -> AsyncIterator[SpreadsheetCont
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
                 try:
-                    print("Attempting to refresh expired token...")
+                    logger.info("Attempting to refresh expired token...")
                     creds.refresh(Request())
-                    print("Token refreshed successfully")
+                    logger.info("Token refreshed successfully")
                     # Save the refreshed token
                     with open(TOKEN_PATH, 'w') as token:
                         token.write(creds.to_json())
                 except Exception as refresh_error:
-                    print(f"Token refresh failed: {refresh_error}")
-                    print("Triggering reauthentication flow...")
+                    logger.error("Token refresh failed: %s", refresh_error)
+                    logger.info("Triggering reauthentication flow...")
                     creds = None  # Clear creds to trigger OAuth flow below
 
             # If refresh failed or creds don't exist, run OAuth flow
@@ -123,23 +128,23 @@ async def spreadsheet_lifespan(server: FastMCP) -> AsyncIterator[SpreadsheetCont
                     # Save the credentials for the next run
                     with open(TOKEN_PATH, 'w') as token:
                         token.write(creds.to_json())
-                    print("Successfully authenticated using OAuth flow")
+                    logger.info("Successfully authenticated using OAuth flow")
                 except Exception as e:
-                    print(f"Error with OAuth flow: {e}")
+                    logger.error("Error with OAuth flow: %s", e)
                     creds = None
     
     # Try Application Default Credentials if no creds thus far
     # This will automatically check GOOGLE_APPLICATION_CREDENTIALS, gcloud auth, and metadata service
     if not creds:
         try:
-            print("Attempting to use Application Default Credentials (ADC)")
-            print("ADC will check: GOOGLE_APPLICATION_CREDENTIALS, gcloud auth, and metadata service")
+            logger.info("Attempting to use Application Default Credentials (ADC)")
+            logger.info("ADC will check: GOOGLE_APPLICATION_CREDENTIALS, gcloud auth, and metadata service")
             creds, project = google.auth.default(
                 scopes=SCOPES
             )
-            print(f"Successfully authenticated using ADC for project: {project}")
+            logger.info("Successfully authenticated using ADC for project: %s", project)
         except Exception as e:
-            print(f"Error using Application Default Credentials: {e}")
+            logger.error("Error using Application Default Credentials: %s", e)
             raise Exception("All authentication methods failed. Please configure credentials.")
     
     # Build the services
@@ -907,7 +912,7 @@ def create_spreadsheet(title: str, folder_id: Optional[str] = None, ctx: Context
     spreadsheet_id = spreadsheet.get('id')
     parents = spreadsheet.get('parents')
     folder_info = f" in folder {target_folder_id}" if target_folder_id else " in root"
-    print(f"Spreadsheet created with ID: {spreadsheet_id}{folder_info}")
+    logger.info("Spreadsheet created with ID: %s%s", spreadsheet_id, folder_info)
 
     return {
         'spreadsheetId': spreadsheet_id,
@@ -994,9 +999,9 @@ def list_spreadsheets(folder_id: Optional[str] = None, ctx: Context = None) -> L
     # If a specific folder is provided or configured, search only in that folder
     if target_folder_id:
         query += f" and '{target_folder_id}' in parents"
-        print(f"Searching for spreadsheets in folder: {target_folder_id}")
+        logger.info("Searching for spreadsheets in folder: %s", target_folder_id)
     else:
-        print("Searching for spreadsheets in 'My Drive'")
+        logger.info("Searching for spreadsheets in 'My Drive'")
     
     # List spreadsheets
     results = drive_service.files().list(
@@ -1122,11 +1127,11 @@ def list_folders(parent_folder_id: Optional[str] = None, ctx: Context = None) ->
     # If a specific parent folder is provided, search only within that folder
     if parent_folder_id:
         query += f" and '{parent_folder_id}' in parents"
-        print(f"Searching for folders in parent folder: {parent_folder_id}")
+        logger.info("Searching for folders in parent folder: %s", parent_folder_id)
     else:
         # Search in root of My Drive (folders that don't have any parent folders)
         query += " and 'root' in parents"
-        print("Searching for folders in 'My Drive' root")
+        logger.info("Searching for folders in 'My Drive' root")
     
     # List folders
     results = drive_service.files().list(
@@ -1690,9 +1695,9 @@ def add_chart(spreadsheet_id: str,
 def main():
     # Log tool filtering configuration if enabled
     if ENABLED_TOOLS is not None:
-        print(f"Tool filtering enabled. Active tools: {', '.join(sorted(ENABLED_TOOLS))}")
+        logger.info("Tool filtering enabled. Active tools: %s", ', '.join(sorted(ENABLED_TOOLS)))
     else:
-        print("Tool filtering disabled. All tools are enabled.")
+        logger.info("Tool filtering disabled. All tools are enabled.")
     
     # Run the server
     transport = "stdio"
