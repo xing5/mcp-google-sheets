@@ -1,0 +1,18 @@
+services:
+  mcp-google-sheets:
+    build:
+      context: .
+      target: builder
+    command: ["uv", "run", "mcp-google-sheets", "--transport", "sse", "--reload"]
+    ports:
+      - "47000:8000"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - DEBUG=${DEBUG:-1}
+      - SERVICE_ACCOUNT_PATH=/run/secrets/service_account
+      - DRIVE_FOLDER_ID=${DRIVE_FOLDER_ID}
+    volumes:
+      - ./service_account.json:/run/secrets/service_account:ro
+      - ./src:/app/src
+    restart: unless-stopped

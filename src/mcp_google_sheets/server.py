@@ -5,13 +5,33 @@ A Model Context Protocol (MCP) server built with FastMCP for interacting with Go
 """
 
 import base64
+import functools
+import logging
 import os
 import sys
+import time
 from typing import List, Dict, Any, Optional, Union
 import json
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
+
+logging.basicConfig(
+    level=logging.DEBUG if os.getenv("DEBUG") else logging.WARNING,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    stream=sys.stderr,
+    force=True,
+)
+logger = logging.getLogger(__name__)
+logging.getLogger("sse_starlette.sse").setLevel(logging.WARNING)  # suppress keepalive ping noise
+# Give our logger a direct handler so uvicorn's dictConfig can't suppress DEBUG output.
+if os.getenv("DEBUG"):
+    logger.setLevel(logging.DEBUG)
+    _h = logging.StreamHandler(sys.stderr)
+    _h.setLevel(logging.DEBUG)
+    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    logger.addHandler(_h)
+    logger.propagate = False
 
 # MCP imports
 from mcp.server.fastmcp import FastMCP, Context
@@ -47,14 +67,14 @@ def _parse_enabled_tools() -> Optional[set]:
         if arg == '--include-tools' and i + 1 < len(sys.argv):
             enabled_tools_str = sys.argv[i + 1]
             break
-    
+
     # Fall back to environment variable
     if not enabled_tools_str:
         enabled_tools_str = os.environ.get('ENABLED_TOOLS')
-    
+
     if not enabled_tools_str:
         return None  # No filtering, enable all tools
-    
+
     # Parse comma-separated list and normalize
     tools = {tool.strip() for tool in enabled_tools_str.split(',') if tool.strip()}
     return tools if tools else None
@@ -77,7 +97,7 @@ async def spreadsheet_lifespan(server: FastMCP) -> AsyncIterator[SpreadsheetCont
 
     if CREDENTIALS_CONFIG:
         creds = service_account.Credentials.from_service_account_info(json.loads(base64.b64decode(CREDENTIALS_CONFIG)), scopes=SCOPES)
-    
+
     # Check for explicit service account authentication first (custom SERVICE_ACCOUNT_PATH)
     if not creds and SERVICE_ACCOUNT_PATH and os.path.exists(SERVICE_ACCOUNT_PATH):
         try:
@@ -86,32 +106,32 @@ async def spreadsheet_lifespan(server: FastMCP) -> AsyncIterator[SpreadsheetCont
                 SERVICE_ACCOUNT_PATH,
                 scopes=SCOPES
             )
-            print("Using service account authentication")
-            print(f"Working with Google Drive folder ID: {DRIVE_FOLDER_ID or 'Not specified'}")
+            logger.debug("Using service account authentication")
+            logger.debug("Working with Google Drive folder ID: %s", DRIVE_FOLDER_ID or 'Not specified')
         except Exception as e:
-            print(f"Error using service account authentication: {e}")
+            logger.error("Error using service account authentication: %s", e)
             creds = None
-    
+
     # Fall back to OAuth flow if service account auth failed or not configured
     if not creds:
-        print("Trying OAuth authentication flow")
+        logger.debug("Trying OAuth authentication flow")
         if os.path.exists(TOKEN_PATH):
             with open(TOKEN_PATH, 'r') as token:
                 creds = Credentials.from_authorized_user_info(json.load(token), SCOPES)
-                
+
         # If credentials are not valid or don't exist, get new ones
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
                 try:
-                    print("Attempting to refresh expired token...")
+                    logger.debug("Attempting to refresh expired token...")
                     creds.refresh(Request())
-                    print("Token refreshed successfully")
+                    logger.debug("Token refreshed successfully")
                     # Save the refreshed token
                     with open(TOKEN_PATH, 'w') as token:
                         token.write(creds.to_json())
                 except Exception as refresh_error:
-                    print(f"Token refresh failed: {refresh_error}")
-                    print("Triggering reauthentication flow...")
+                    logger.warning("Token refresh failed: %s", refresh_error)
+                    logger.debug("Triggering reauthentication flow...")
                     creds = None  # Clear creds to trigger OAuth flow below
 
             # If refresh failed or creds don't exist, run OAuth flow
@@ -123,29 +143,30 @@ async def spreadsheet_lifespan(server: FastMCP) -> AsyncIterator[SpreadsheetCont
                     # Save the credentials for the next run
                     with open(TOKEN_PATH, 'w') as token:
                         token.write(creds.to_json())
-                    print("Successfully authenticated using OAuth flow")
+                    logger.debug("Successfully authenticated using OAuth flow")
                 except Exception as e:
-                    print(f"Error with OAuth flow: {e}")
+                    logger.error("Error with OAuth flow: %s", e)
                     creds = None
-    
+
     # Try Application Default Credentials if no creds thus far
     # This will automatically check GOOGLE_APPLICATION_CREDENTIALS, gcloud auth, and metadata service
     if not creds:
         try:
-            print("Attempting to use Application Default Credentials (ADC)")
-            print("ADC will check: GOOGLE_APPLICATION_CREDENTIALS, gcloud auth, and metadata service")
+            logger.debug("Attempting to use Application Default Credentials (ADC)")
+            logger.debug("ADC will check: GOOGLE_APPLICATION_CREDENTIALS, gcloud auth, and metadata service")
             creds, project = google.auth.default(
                 scopes=SCOPES
             )
-            print(f"Successfully authenticated using ADC for project: {project}")
+            logger.debug("Successfully authenticated using ADC for project: %s", project)
         except Exception as e:
-            print(f"Error using Application Default Credentials: {e}")
+            logger.error("Error using Application Default Credentials: %s", e)
             raise Exception("All authentication methods failed. Please configure credentials.")
-    
+
     # Build the services
-    sheets_service = build('sheets', 'v4', credentials=creds)
-    drive_service = build('drive', 'v3', credentials=creds)
-    
+    # cache_discovery=False: file cache requires oauth2client<4.0; all auth paths here use google-auth
+    sheets_service = build('sheets', 'v4', credentials=creds, cache_discovery=False)
+    drive_service = build('drive', 'v3', credentials=creds, cache_discovery=False)
+
     try:
         # Provide the service in the context
         yield SpreadsheetContext(
@@ -174,35 +195,50 @@ mcp = FastMCP("Google Spreadsheet",
               host=_resolved_host,
               port=_resolved_port)
 
+# Module-level ASGI app for uvicorn --reload support
+app = mcp.sse_app()
+
+
+def _timed(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        start = time.perf_counter()
+        try:
+            return func(*args, **kwargs)
+        finally:
+            logger.debug("%s took %.3fs", func.__name__, time.perf_counter() - start)
+    return wrapper
+
 
 def tool(annotations: Optional[ToolAnnotations] = None):
     """
     Conditional tool decorator that only registers tools if they're enabled.
-    
+
     This wrapper checks ENABLED_TOOLS configuration and only applies the @mcp.tool
     decorator if the tool should be enabled. If ENABLED_TOOLS is None (default),
     all tools are enabled.
-    
+
     Args:
         annotations: Optional ToolAnnotations for the tool
-    
+
     Returns:
         Decorator function
     """
     def decorator(func):
         tool_name = func.__name__
-        
+
         # If no filtering is configured, or if this tool is in the enabled list
         if ENABLED_TOOLS is None or tool_name in ENABLED_TOOLS:
             # Apply the mcp.tool decorator
+            timed = _timed(func)
             if annotations:
-                return mcp.tool(annotations=annotations)(func)
+                return mcp.tool(annotations=annotations)(timed)
             else:
-                return mcp.tool()(func)
+                return mcp.tool()(timed)
         else:
             # Don't register this tool - return the function undecorated
             return func
-    
+
     return decorator
 
 
@@ -219,7 +255,7 @@ def get_sheet_data(spreadsheet_id: str,
                    ctx: Context = None) -> Dict[str, Any]:
     """
     Get data from a specific sheet in a Google Spreadsheet.
-    
+
     Args:
         spreadsheet_id: The ID of the spreadsheet (found in the URL)
         sheet: The name of the sheet
@@ -228,7 +264,7 @@ def get_sheet_data(spreadsheet_id: str,
             Note: Setting this to True will significantly increase the response size and token usage
             when parsing the response, as it includes detailed cell formatting information.
             Default is False (returns values only, more efficient).
-    
+
     Returns:
         Grid data structure with either full metadata or just values from Google Sheets API, depending on include_grid_data parameter
     """
@@ -239,7 +275,7 @@ def get_sheet_data(spreadsheet_id: str,
         full_range = f"{sheet}!{range}"
     else:
         full_range = sheet
-    
+
     if include_grid_data:
         # Use full API to get all grid data including formatting
         result = sheets_service.spreadsheets().get(
@@ -253,7 +289,7 @@ def get_sheet_data(spreadsheet_id: str,
             spreadsheetId=spreadsheet_id,
             range=full_range
         ).execute()
-        
+
         # Format the response to match expected structure
         result = {
             'spreadsheetId': spreadsheet_id,
@@ -277,30 +313,30 @@ def get_sheet_formulas(spreadsheet_id: str,
                        ctx: Context = None) -> List[List[Any]]:
     """
     Get formulas from a specific sheet in a Google Spreadsheet.
-    
+
     Args:
         spreadsheet_id: The ID of the spreadsheet (found in the URL)
         sheet: The name of the sheet
         range: Optional cell range in A1 notation (e.g., 'A1:C10'). If not provided, gets all formulas from the sheet.
-    
+
     Returns:
         A 2D array of the sheet formulas.
     """
     sheets_service = ctx.request_context.lifespan_context.sheets_service
-    
+
     # Construct the range
     if range:
         full_range = f"{sheet}!{range}"
     else:
         full_range = sheet  # Get all formulas in the specified sheet
-    
+
     # Call the Sheets API
     result = sheets_service.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
         range=full_range,
         valueRenderOption='FORMULA'  # Request formulas
     ).execute()
-    
+
     # Get the formulas from the response
     formulas = result.get('values', [])
     return formulas
@@ -318,26 +354,26 @@ def update_cells(spreadsheet_id: str,
                 ctx: Context = None) -> Dict[str, Any]:
     """
     Update cells in a Google Spreadsheet.
-    
+
     Args:
         spreadsheet_id: The ID of the spreadsheet (found in the URL)
         sheet: The name of the sheet
         range: Cell range in A1 notation (e.g., 'A1:C10')
         data: 2D array of values to update
-    
+
     Returns:
         Result of the update operation
     """
     sheets_service = ctx.request_context.lifespan_context.sheets_service
-    
+
     # Construct the range
     full_range = f"{sheet}!{range}"
-    
+
     # Prepare the value range object
     value_range_body = {
         'values': data
     }
-    
+
     # Call the Sheets API to update values
     result = sheets_service.spreadsheets().values().update(
         spreadsheetId=spreadsheet_id,
@@ -345,7 +381,7 @@ def update_cells(spreadsheet_id: str,
         valueInputOption='USER_ENTERED',
         body=value_range_body
     ).execute()
-    
+
     return result
 
 
@@ -361,18 +397,18 @@ def batch_update_cells(spreadsheet_id: str,
                        ctx: Context = None) -> Dict[str, Any]:
     """
     Batch update multiple ranges in a Google Spreadsheet.
-    
+
     Args:
         spreadsheet_id: The ID of the spreadsheet (found in the URL)
         sheet: The name of the sheet
         ranges: Dictionary mapping range strings to 2D arrays of values
                e.g., {'A1:B2': [[1, 2], [3, 4]], 'D1:E2': [['a', 'b'], ['c', 'd']]}
-    
+
     Returns:
         Result of the batch update operation
     """
     sheets_service = ctx.request_context.lifespan_context.sheets_service
-    
+
     # Prepare the batch update request
     data = []
     for range_str, values in ranges.items():
@@ -381,18 +417,18 @@ def batch_update_cells(spreadsheet_id: str,
             'range': full_range,
             'values': values
         })
-    
+
     batch_body = {
         'valueInputOption': 'USER_ENTERED',
         'data': data
     }
-    
+
     # Call the Sheets API to perform batch update
     result = sheets_service.spreadsheets().values().batchUpdate(
         spreadsheetId=spreadsheet_id,
         body=batch_body
     ).execute()
-    
+
     return result
 
 
@@ -409,30 +445,30 @@ def add_rows(spreadsheet_id: str,
              ctx: Context = None) -> Dict[str, Any]:
     """
     Add rows to a sheet in a Google Spreadsheet.
-    
+
     Args:
         spreadsheet_id: The ID of the spreadsheet (found in the URL)
         sheet: The name of the sheet
         count: Number of rows to add
         start_row: 0-based row index to start adding. If not provided, adds at the beginning.
-    
+
     Returns:
         Result of the operation
     """
     sheets_service = ctx.request_context.lifespan_context.sheets_service
-    
+
     # Get sheet ID
     spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
     sheet_id = None
-    
+
     for s in spreadsheet['sheets']:
         if s['properties']['title'] == sheet:
             sheet_id = s['properties']['sheetId']
             break
-            
+
     if sheet_id is None:
         return {"error": f"Sheet '{sheet}' not found"}
-    
+
     # Prepare the insert rows request
     request_body = {
         "requests": [
@@ -449,13 +485,13 @@ def add_rows(spreadsheet_id: str,
             }
         ]
     }
-    
+
     # Execute the request
     result = sheets_service.spreadsheets().batchUpdate(
         spreadsheetId=spreadsheet_id,
         body=request_body
     ).execute()
-    
+
     return result
 
 
@@ -472,30 +508,30 @@ def add_columns(spreadsheet_id: str,
                 ctx: Context = None) -> Dict[str, Any]:
     """
     Add columns to a sheet in a Google Spreadsheet.
-    
+
     Args:
         spreadsheet_id: The ID of the spreadsheet (found in the URL)
         sheet: The name of the sheet
         count: Number of columns to add
         start_column: 0-based column index to start adding. If not provided, adds at the beginning.
-    
+
     Returns:
         Result of the operation
     """
     sheets_service = ctx.request_context.lifespan_context.sheets_service
-    
+
     # Get sheet ID
     spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
     sheet_id = None
-    
+
     for s in spreadsheet['sheets']:
         if s['properties']['title'] == sheet:
             sheet_id = s['properties']['sheetId']
             break
-            
+
     if sheet_id is None:
         return {"error": f"Sheet '{sheet}' not found"}
-    
+
     # Prepare the insert columns request
     request_body = {
         "requests": [
@@ -512,13 +548,13 @@ def add_columns(spreadsheet_id: str,
             }
         ]
     }
-    
+
     # Execute the request
     result = sheets_service.spreadsheets().batchUpdate(
         spreadsheetId=spreadsheet_id,
         body=request_body
     ).execute()
-    
+
     return result
 
 
@@ -531,21 +567,21 @@ def add_columns(spreadsheet_id: str,
 def list_sheets(spreadsheet_id: str, ctx: Context = None) -> List[str]:
     """
     List all sheets in a Google Spreadsheet.
-    
+
     Args:
         spreadsheet_id: The ID of the spreadsheet (found in the URL)
-    
+
     Returns:
         List of sheet names
     """
     sheets_service = ctx.request_context.lifespan_context.sheets_service
-    
+
     # Get spreadsheet metadata
     spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-    
+
     # Extract sheet names
     sheet_names = [sheet['properties']['title'] for sheet in spreadsheet['sheets']]
-    
+
     return sheet_names
 
 
@@ -562,30 +598,30 @@ def copy_sheet(src_spreadsheet: str,
                ctx: Context = None) -> Dict[str, Any]:
     """
     Copy a sheet from one spreadsheet to another.
-    
+
     Args:
         src_spreadsheet: Source spreadsheet ID
         src_sheet: Source sheet name
         dst_spreadsheet: Destination spreadsheet ID
         dst_sheet: Destination sheet name
-    
+
     Returns:
         Result of the operation
     """
     sheets_service = ctx.request_context.lifespan_context.sheets_service
-    
+
     # Get source sheet ID
     src = sheets_service.spreadsheets().get(spreadsheetId=src_spreadsheet).execute()
     src_sheet_id = None
-    
+
     for s in src['sheets']:
         if s['properties']['title'] == src_sheet:
             src_sheet_id = s['properties']['sheetId']
             break
-            
+
     if src_sheet_id is None:
         return {"error": f"Source sheet '{src_sheet}' not found"}
-    
+
     # Copy the sheet to destination spreadsheet
     copy_result = sheets_service.spreadsheets().sheets().copyTo(
         spreadsheetId=src_spreadsheet,
@@ -594,12 +630,12 @@ def copy_sheet(src_spreadsheet: str,
             "destinationSpreadsheetId": dst_spreadsheet
         }
     ).execute()
-    
+
     # If destination sheet name is different from the default copied name, rename it
     if 'title' in copy_result and copy_result['title'] != dst_sheet:
         # Get the ID of the newly copied sheet
         copy_sheet_id = copy_result['sheetId']
-        
+
         # Rename the copied sheet
         rename_request = {
             "requests": [
@@ -614,17 +650,17 @@ def copy_sheet(src_spreadsheet: str,
                 }
             ]
         }
-        
+
         rename_result = sheets_service.spreadsheets().batchUpdate(
             spreadsheetId=dst_spreadsheet,
             body=rename_request
         ).execute()
-        
+
         return {
             "copy": copy_result,
             "rename": rename_result
         }
-    
+
     return {"copy": copy_result}
 
 
@@ -640,29 +676,29 @@ def rename_sheet(spreadsheet: str,
                  ctx: Context = None) -> Dict[str, Any]:
     """
     Rename a sheet in a Google Spreadsheet.
-    
+
     Args:
         spreadsheet: Spreadsheet ID
         sheet: Current sheet name
         new_name: New sheet name
-    
+
     Returns:
         Result of the operation
     """
     sheets_service = ctx.request_context.lifespan_context.sheets_service
-    
+
     # Get sheet ID
     spreadsheet_data = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet).execute()
     sheet_id = None
-    
+
     for s in spreadsheet_data['sheets']:
         if s['properties']['title'] == sheet:
             sheet_id = s['properties']['sheetId']
             break
-            
+
     if sheet_id is None:
         return {"error": f"Sheet '{sheet}' not found"}
-    
+
     # Prepare the rename request
     request_body = {
         "requests": [
@@ -677,13 +713,13 @@ def rename_sheet(spreadsheet: str,
             }
         ]
     }
-    
+
     # Execute the request
     result = sheets_service.spreadsheets().batchUpdate(
         spreadsheetId=spreadsheet,
         body=request_body
     ).execute()
-    
+
     return result
 
 
@@ -697,25 +733,25 @@ def get_multiple_sheet_data(queries: List[Dict[str, str]],
                             ctx: Context = None) -> List[Dict[str, Any]]:
     """
     Get data from multiple specific ranges in Google Spreadsheets.
-    
+
     Args:
-        queries: A list of dictionaries, each specifying a query. 
+        queries: A list of dictionaries, each specifying a query.
                  Each dictionary should have 'spreadsheet_id', 'sheet', and 'range' keys.
-                 Example: [{'spreadsheet_id': 'abc', 'sheet': 'Sheet1', 'range': 'A1:B5'}, 
+                 Example: [{'spreadsheet_id': 'abc', 'sheet': 'Sheet1', 'range': 'A1:B5'},
                            {'spreadsheet_id': 'xyz', 'sheet': 'Data', 'range': 'C1:C10'}]
-    
+
     Returns:
-        A list of dictionaries, each containing the original query parameters 
+        A list of dictionaries, each containing the original query parameters
         and the fetched 'data' or an 'error'.
     """
     sheets_service = ctx.request_context.lifespan_context.sheets_service
     results = []
-    
+
     for query in queries:
         spreadsheet_id = query.get('spreadsheet_id')
         sheet = query.get('sheet')
         range_str = query.get('range')
-        
+
         if not all([spreadsheet_id, sheet, range_str]):
             results.append({**query, 'error': 'Missing required keys (spreadsheet_id, sheet, range)'})
             continue
@@ -723,20 +759,20 @@ def get_multiple_sheet_data(queries: List[Dict[str, str]],
         try:
             # Construct the range
             full_range = f"{sheet}!{range_str}"
-            
+
             # Call the Sheets API
             result = sheets_service.spreadsheets().values().get(
                 spreadsheetId=spreadsheet_id,
                 range=full_range
             ).execute()
-            
+
             # Get the values from the response
             values = result.get('values', [])
             results.append({**query, 'data': values})
 
         except Exception as e:
             results.append({**query, 'error': str(e)})
-            
+
     return results
 
 
@@ -750,20 +786,20 @@ def get_multiple_spreadsheet_summary(spreadsheet_ids: List[str],
                                    rows_to_fetch: int = 5,
                                    ctx: Context = None) -> List[Dict[str, Any]]:
     """
-    Get a summary of multiple Google Spreadsheets, including sheet names, 
+    Get a summary of multiple Google Spreadsheets, including sheet names,
     headers, and the first few rows of data for each sheet.
-    
+
     Args:
         spreadsheet_ids: A list of spreadsheet IDs to summarize.
         rows_to_fetch: The number of rows (including header) to fetch for the summary (default: 5).
-    
+
     Returns:
-        A list of dictionaries, each representing a spreadsheet summary. 
+        A list of dictionaries, each representing a spreadsheet summary.
         Includes spreadsheet title, sheet summaries (title, headers, first rows), or an error.
     """
     sheets_service = ctx.request_context.lifespan_context.sheets_service
     summaries = []
-    
+
     for spreadsheet_id in spreadsheet_ids:
         summary_data = {
             'spreadsheet_id': spreadsheet_id,
@@ -777,9 +813,9 @@ def get_multiple_spreadsheet_summary(spreadsheet_ids: List[str],
                 spreadsheetId=spreadsheet_id,
                 fields='properties.title,sheets(properties(title,sheetId))'
             ).execute()
-            
+
             summary_data['title'] = spreadsheet.get('properties', {}).get('title', 'Unknown Title')
-            
+
             sheet_summaries = []
             for sheet in spreadsheet.get('sheets', []):
                 sheet_title = sheet.get('properties', {}).get('title')
@@ -791,25 +827,25 @@ def get_multiple_spreadsheet_summary(spreadsheet_ids: List[str],
                     'first_rows': [],
                     'error': None
                 }
-                
+
                 if not sheet_title:
                     sheet_summary['error'] = 'Sheet title not found'
                     sheet_summaries.append(sheet_summary)
                     continue
-                    
+
                 try:
                     # Fetch the first few rows (e.g., A1:Z5)
                     # Adjust range if fewer rows are requested
                     max_row = max(1, rows_to_fetch) # Ensure at least 1 row is fetched
                     range_to_get = f"{sheet_title}!A1:{max_row}" # Fetch all columns up to max_row
-                    
+
                     result = sheets_service.spreadsheets().values().get(
                         spreadsheetId=spreadsheet_id,
                         range=range_to_get
                     ).execute()
-                    
+
                     values = result.get('values', [])
-                    
+
                     if values:
                         sheet_summary['headers'] = values[0]
                         if len(values) > 1:
@@ -821,16 +857,16 @@ def get_multiple_spreadsheet_summary(spreadsheet_ids: List[str],
 
                 except Exception as sheet_e:
                     sheet_summary['error'] = f'Error fetching data for sheet {sheet_title}: {sheet_e}'
-                
+
                 sheet_summaries.append(sheet_summary)
-            
+
             summary_data['sheets'] = sheet_summaries
-            
+
         except Exception as e:
             summary_data['error'] = f'Error fetching spreadsheet {spreadsheet_id}: {e}'
-            
+
         summaries.append(summary_data)
-        
+
     return summaries
 
 
@@ -838,20 +874,20 @@ def get_multiple_spreadsheet_summary(spreadsheet_ids: List[str],
 def get_spreadsheet_info(spreadsheet_id: str) -> str:
     """
     Get basic information about a Google Spreadsheet.
-    
+
     Args:
         spreadsheet_id: The ID of the spreadsheet
-    
+
     Returns:
         JSON string with spreadsheet information
     """
     # Access the context through mcp.get_lifespan_context() for resources
     context = mcp.get_lifespan_context()
     sheets_service = context.sheets_service
-    
+
     # Get spreadsheet metadata
     spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-    
+
     # Extract relevant information
     info = {
         "title": spreadsheet.get('properties', {}).get('title', 'Unknown'),
@@ -864,7 +900,7 @@ def get_spreadsheet_info(spreadsheet_id: str) -> str:
             for sheet in spreadsheet.get('sheets', [])
         ]
     }
-    
+
     return json.dumps(info, indent=2)
 
 
@@ -877,12 +913,12 @@ def get_spreadsheet_info(spreadsheet_id: str) -> str:
 def create_spreadsheet(title: str, folder_id: Optional[str] = None, ctx: Context = None) -> Dict[str, Any]:
     """
     Create a new Google Spreadsheet.
-    
+
     Args:
         title: The title of the new spreadsheet
         folder_id: Optional Google Drive folder ID where the spreadsheet should be created.
                   If not provided, uses the configured default folder or creates in root.
-    
+
     Returns:
         Information about the newly created spreadsheet including its ID
     """
@@ -897,7 +933,7 @@ def create_spreadsheet(title: str, folder_id: Optional[str] = None, ctx: Context
     }
     if target_folder_id:
         file_body['parents'] = [target_folder_id]
-    
+
     spreadsheet = drive_service.files().create(
         supportsAllDrives=True,
         body=file_body,
@@ -907,7 +943,7 @@ def create_spreadsheet(title: str, folder_id: Optional[str] = None, ctx: Context
     spreadsheet_id = spreadsheet.get('id')
     parents = spreadsheet.get('parents')
     folder_info = f" in folder {target_folder_id}" if target_folder_id else " in root"
-    print(f"Spreadsheet created with ID: {spreadsheet_id}{folder_info}")
+    logger.debug("Spreadsheet created with ID: %s%s", spreadsheet_id, folder_info)
 
     return {
         'spreadsheetId': spreadsheet_id,
@@ -927,16 +963,16 @@ def create_sheet(spreadsheet_id: str,
                 ctx: Context = None) -> Dict[str, Any]:
     """
     Create a new sheet tab in an existing Google Spreadsheet.
-    
+
     Args:
         spreadsheet_id: The ID of the spreadsheet
         title: The title for the new sheet
-    
+
     Returns:
         Information about the newly created sheet
     """
     sheets_service = ctx.request_context.lifespan_context.sheets_service
-    
+
     # Define the add sheet request
     request_body = {
         "requests": [
@@ -949,16 +985,16 @@ def create_sheet(spreadsheet_id: str,
             }
         ]
     }
-    
+
     # Execute the request
     result = sheets_service.spreadsheets().batchUpdate(
         spreadsheetId=spreadsheet_id,
         body=request_body
     ).execute()
-    
+
     # Extract the new sheet information
     new_sheet_props = result['replies'][0]['addSheet']['properties']
-    
+
     return {
         'sheetId': new_sheet_props['sheetId'],
         'title': new_sheet_props['title'],
@@ -977,27 +1013,27 @@ def list_spreadsheets(folder_id: Optional[str] = None, ctx: Context = None) -> L
     """
     List all spreadsheets in the specified Google Drive folder.
     If no folder is specified, uses the configured default folder or lists from 'My Drive'.
-    
+
     Args:
         folder_id: Optional Google Drive folder ID to search in.
                   If not provided, uses the configured default folder or searches 'My Drive'.
-    
+
     Returns:
         List of spreadsheets with their ID and title
     """
     drive_service = ctx.request_context.lifespan_context.drive_service
     # Use provided folder_id or fall back to configured default
     target_folder_id = folder_id or ctx.request_context.lifespan_context.folder_id
-    
+
     query = "mimeType='application/vnd.google-apps.spreadsheet'"
-    
+
     # If a specific folder is provided or configured, search only in that folder
     if target_folder_id:
         query += f" and '{target_folder_id}' in parents"
-        print(f"Searching for spreadsheets in folder: {target_folder_id}")
+        logger.debug("Searching for spreadsheets in folder: %s", target_folder_id)
     else:
-        print("Searching for spreadsheets in 'My Drive'")
-    
+        logger.debug("Searching for spreadsheets in 'My Drive'")
+
     # List spreadsheets
     results = drive_service.files().list(
         q=query,
@@ -1007,9 +1043,9 @@ def list_spreadsheets(folder_id: Optional[str] = None, ctx: Context = None) -> L
         fields='files(id, name)',
         orderBy='modifiedTime desc'
     ).execute()
-    
+
     spreadsheets = results.get('files', [])
-    
+
     return [{'id': sheet['id'], 'title': sheet['name']} for sheet in spreadsheets]
 
 
@@ -1025,7 +1061,7 @@ def share_spreadsheet(spreadsheet_id: str,
                       ctx: Context = None) -> Dict[str, List[Dict[str, Any]]]:
     """
     Share a Google Spreadsheet with multiple users via email, assigning specific roles.
-    
+
     Args:
         spreadsheet_id: The ID of the spreadsheet to share.
         recipients: A list of dictionaries, each containing 'email_address' and 'role'.
@@ -1037,24 +1073,24 @@ def share_spreadsheet(spreadsheet_id: str,
         send_notification: Whether to send a notification email to the users. Defaults to True.
 
     Returns:
-        A dictionary containing lists of 'successes' and 'failures'. 
+        A dictionary containing lists of 'successes' and 'failures'.
         Each item in the lists includes the email address and the outcome.
     """
     drive_service = ctx.request_context.lifespan_context.drive_service
     successes = []
     failures = []
-    
+
     for recipient in recipients:
         email_address = recipient.get('email_address')
         role = recipient.get('role', 'writer') # Default to writer if role is missing for an entry
-        
+
         if not email_address:
             failures.append({
                 'email_address': None,
                 'error': 'Missing email_address in recipient entry.'
             })
             continue
-            
+
         if role not in ['reader', 'commenter', 'writer']:
              failures.append({
                 'email_address': email_address,
@@ -1067,7 +1103,7 @@ def share_spreadsheet(spreadsheet_id: str,
             'role': role,
             'emailAddress': email_address
         }
-        
+
         try:
             result = drive_service.permissions().create(
                 fileId=spreadsheet_id,
@@ -1076,8 +1112,8 @@ def share_spreadsheet(spreadsheet_id: str,
                 fields='id'
             ).execute()
             successes.append({
-                'email_address': email_address, 
-                'role': role, 
+                'email_address': email_address,
+                'role': role,
                 'permissionId': result.get('id')
             })
         except Exception as e:
@@ -1093,7 +1129,7 @@ def share_spreadsheet(spreadsheet_id: str,
                 'email_address': email_address,
                 'error': f"Failed to share: {error_details}"
             })
-            
+
     return {"successes": successes, "failures": failures}
 
 
@@ -1107,27 +1143,27 @@ def list_folders(parent_folder_id: Optional[str] = None, ctx: Context = None) ->
     """
     List all folders in the specified Google Drive folder.
     If no parent folder is specified, lists folders from 'My Drive' root.
-    
+
     Args:
         parent_folder_id: Optional Google Drive folder ID to search within.
                          If not provided, searches the root of 'My Drive'.
-    
+
     Returns:
         List of folders with their ID, name, and parent information
     """
     drive_service = ctx.request_context.lifespan_context.drive_service
-    
+
     query = "mimeType='application/vnd.google-apps.folder'"
-    
+
     # If a specific parent folder is provided, search only within that folder
     if parent_folder_id:
         query += f" and '{parent_folder_id}' in parents"
-        print(f"Searching for folders in parent folder: {parent_folder_id}")
+        logger.debug("Searching for folders in parent folder: %s", parent_folder_id)
     else:
         # Search in root of My Drive (folders that don't have any parent folders)
         query += " and 'root' in parents"
-        print("Searching for folders in 'My Drive' root")
-    
+        logger.debug("Searching for folders in 'My Drive' root")
+
     # List folders
     results = drive_service.files().list(
         q=query,
@@ -1137,15 +1173,15 @@ def list_folders(parent_folder_id: Optional[str] = None, ctx: Context = None) ->
         fields='files(id, name, parents)',
         orderBy='name'
     ).execute()
-    
+
     folders = results.get('files', [])
-    
+
     return [
         {
-            'id': folder['id'], 
+            'id': folder['id'],
             'name': folder['name'],
             'parent': folder.get('parents', ['root'])[0] if folder.get('parents') else 'root'
-        } 
+        }
         for folder in folders
     ]
 
@@ -1232,59 +1268,59 @@ def _letter_to_column_index(letter: str) -> int:
 def _parse_a1_notation(range_str: str) -> Dict[str, int]:
     """
     Parse A1 notation range to row/column indices.
-    
+
     Args:
         range_str: A1 notation range (e.g., 'A1:C10')
-    
+
     Returns:
         Dictionary containing applicable indices based on the range format.
         May include: startRowIndex, endRowIndex, startColumnIndex, endColumnIndex.
         Not all keys are present for all range formats (e.g., 'A:B' has no row indices).
     """
     import re
-    
+
     # Match patterns like A1, A1:B2, A:B, 1:10
     match = re.match(r'^([A-Z]+)?(\d+)?(?::([A-Z]+)?(\d+)?)?$', range_str.upper())
-    
+
     if not match:
         raise ValueError(f"Invalid A1 notation: {range_str}")
-    
+
     start_col, start_row, end_col, end_row = match.groups()
-    
+
     result = {}
-    
+
     # Start column
     if start_col:
         result['startColumnIndex'] = _letter_to_column_index(start_col)
-    
+
     # Start row (A1 notation is 1-based, convert to 0-based)
     if start_row:
         result['startRowIndex'] = int(start_row) - 1
-    
+
     # End column (exclusive in API, so add 1)
     if end_col:
         result['endColumnIndex'] = _letter_to_column_index(end_col) + 1
     elif start_col:
         result['endColumnIndex'] = result['startColumnIndex'] + 1
-    
+
     # End row (exclusive in API, so no -1 needed)
     if end_row:
         result['endRowIndex'] = int(end_row)
     elif start_row:
         result['endRowIndex'] = result['startRowIndex'] + 1
-    
+
     return result
 
 
 def _get_sheet_id(sheets_service: Any, spreadsheet_id: str, sheet_name: str) -> Optional[int]:
     """
     Get the sheet ID for a given sheet name.
-    
+
     Args:
         sheets_service: Google Sheets service instance
         spreadsheet_id: The spreadsheet ID
         sheet_name: The name of the sheet
-    
+
     Returns:
         The sheet ID, or None if not found
     """
@@ -1293,11 +1329,11 @@ def _get_sheet_id(sheets_service: Any, spreadsheet_id: str, sheet_name: str) -> 
             spreadsheetId=spreadsheet_id,
             fields='sheets(properties(title,sheetId))'
         ).execute()
-        
+
         for sheet in spreadsheet.get('sheets', []):
             if sheet['properties']['title'] == sheet_name:
                 return sheet['properties']['sheetId']
-        
+
         return None
     except Exception:
         return None
@@ -1399,7 +1435,7 @@ def batch_update(spreadsheet_id: str,
     Execute a batch update on a Google Spreadsheet using the full batchUpdate endpoint.
     This provides access to all batchUpdate operations including adding sheets, updating properties,
     inserting/deleting dimensions, formatting, and more.
-    
+
     Args:
         spreadsheet_id: The ID of the spreadsheet (found in the URL)
         requests: A list of request objects. Each request object can contain any valid batchUpdate operation.
@@ -1414,7 +1450,7 @@ def batch_update(spreadsheet_id: str,
                  - deleteConditionalFormatRule: Remove conditional formatting
                  - updateDimensionProperties: Update row/column properties
                  - and many more...
-                 
+
                  Example requests:
                  [
                      {
@@ -1444,30 +1480,30 @@ def batch_update(spreadsheet_id: str,
                          }
                      }
                  ]
-    
+
     Returns:
         Result of the batch update operation, including replies for each request
     """
     sheets_service = ctx.request_context.lifespan_context.sheets_service
-    
+
     # Validate input
     if not requests:
         return {"error": "requests list cannot be empty"}
-    
+
     if not all(isinstance(req, dict) for req in requests):
         return {"error": "Each request must be a dictionary"}
-    
+
     # Prepare the batch update request body
     request_body = {
         "requests": requests
     }
-    
+
     # Execute the batch update
     result = sheets_service.spreadsheets().batchUpdate(
         spreadsheetId=spreadsheet_id,
         body=request_body
     ).execute()
-    
+
     return result
 
 
@@ -1491,10 +1527,10 @@ def add_chart(spreadsheet_id: str,
               ctx: Context = None) -> Dict[str, Any]:
     """
     Add a chart to a Google Spreadsheet.
-    
+
     Creates a chart from the specified data range with customizable type, title, and positioning.
     The chart is added as a floating element on the sheet.
-    
+
     Args:
         spreadsheet_id: The ID of the spreadsheet (found in the URL)
         sheet: The name of the sheet containing the data
@@ -1507,7 +1543,7 @@ def add_chart(spreadsheet_id: str,
                    - SCATTER: Scatter plot
                    - COMBO: Combination chart
                    - HISTOGRAM: Histogram
-        data_range: A1 notation range for chart data (e.g., 'A1:C10'). 
+        data_range: A1 notation range for chart data (e.g., 'A1:C10').
                    The first row is typically treated as headers.
         title: Optional title for the chart
         x_axis_label: Optional label for the X axis (bottom axis)
@@ -1516,10 +1552,10 @@ def add_chart(spreadsheet_id: str,
         position_y: Vertical position offset in pixels from the top-left corner (default: 0)
         width: Width of the chart in pixels (default: 600)
         height: Height of the chart in pixels (default: 400)
-    
+
     Returns:
         Result of the chart creation operation
-    
+
     Examples:
         Create a column chart showing sales data:
         add_chart(
@@ -1531,7 +1567,7 @@ def add_chart(spreadsheet_id: str,
             x_axis_label="Month",
             y_axis_label="Revenue ($)"
         )
-        
+
         Create a pie chart for market share:
         add_chart(
             spreadsheet_id="abc123",
@@ -1542,33 +1578,33 @@ def add_chart(spreadsheet_id: str,
         )
     """
     sheets_service = ctx.request_context.lifespan_context.sheets_service
-    
+
     # Validate chart type
     valid_chart_types = ['COLUMN', 'BAR', 'LINE', 'AREA', 'PIE', 'SCATTER', 'COMBO', 'HISTOGRAM']
     if chart_type.upper() not in valid_chart_types:
         return {
             "error": f"Invalid chart type '{chart_type}'. Must be one of: {', '.join(valid_chart_types)}"
         }
-    
+
     chart_type = chart_type.upper()
-    
+
     # Get sheet ID
     sheet_id = _get_sheet_id(sheets_service, spreadsheet_id, sheet)
     if sheet_id is None:
         return {"error": f"Sheet '{sheet}' not found in spreadsheet"}
-    
+
     # Parse the A1 notation range
     try:
         range_indices = _parse_a1_notation(data_range)
     except ValueError as e:
         return {"error": str(e)}
-    
+
     # Build the source range for the chart
     source_range = {
         "sheetId": sheet_id,
         **range_indices
     }
-    
+
     # Build chart specification based on chart type
     # Note: For basic charts, using the same source_range for both domains and series
     # allows the API to automatically interpret the first column as the domain (X-axis labels)
@@ -1618,11 +1654,11 @@ def add_chart(spreadsheet_id: str,
                 "headerCount": 1
             }
         }
-        
+
         # Add title if provided
         if title:
             chart_spec["title"] = title
-        
+
         # Add axis labels if provided
         if x_axis_label:
             chart_spec["basicChart"]["axis"].append({
@@ -1633,7 +1669,7 @@ def add_chart(spreadsheet_id: str,
             chart_spec["basicChart"]["axis"].append({
                 "position": "BOTTOM_AXIS"
             })
-        
+
         if y_axis_label:
             chart_spec["basicChart"]["axis"].append({
                 "position": "LEFT_AXIS",
@@ -1643,7 +1679,7 @@ def add_chart(spreadsheet_id: str,
             chart_spec["basicChart"]["axis"].append({
                 "position": "LEFT_AXIS"
             })
-    
+
     # Build the add chart request
     request_body = {
         "requests": [{
@@ -1667,14 +1703,14 @@ def add_chart(spreadsheet_id: str,
             }
         }]
     }
-    
+
     # Execute the request
     try:
         result = sheets_service.spreadsheets().batchUpdate(
             spreadsheetId=spreadsheet_id,
             body=request_body
         ).execute()
-        
+
         return {
             "success": True,
             "message": f"Chart '{title or chart_type}' added successfully",
@@ -1686,19 +1722,32 @@ def add_chart(spreadsheet_id: str,
             "error": f"Failed to add chart: {str(e)}"
         }
 
-
+print('out of main')
 def main():
-    # Log tool filtering configuration if enabled
+    print('main is running', flush=True)
     if ENABLED_TOOLS is not None:
-        print(f"Tool filtering enabled. Active tools: {', '.join(sorted(ENABLED_TOOLS))}")
+        logger.debug("Tool filtering enabled. Active tools: %s", ', '.join(sorted(ENABLED_TOOLS)))
     else:
-        print("Tool filtering disabled. All tools are enabled.")
-    
+        logger.debug("Tool filtering disabled. All tools are enabled.")
+
     # Run the server
     transport = "stdio"
+    reload = False
     for i, arg in enumerate(sys.argv):
         if arg == "--transport" and i + 1 < len(sys.argv):
             transport = sys.argv[i + 1]
-            break
+        if arg == "--reload":
+            reload = True
 
-    mcp.run(transport=transport)
+    if reload and transport == "sse":
+        print(' we are running normally ')
+        import uvicorn
+        uvicorn.run(
+            "mcp_google_sheets.server:app",
+            host=_resolved_host,
+            port=_resolved_port,
+            reload=True,
+        )
+    else:
+        print(' were doing the thing ')
+        mcp.run(transport=transport)
