@@ -5,13 +5,34 @@ A Model Context Protocol (MCP) server built with FastMCP for interacting with Go
 """
 
 import base64
+import functools
+import logging
 import os
 import sys
+import time
 from typing import List, Dict, Any, Optional, Union
 import json
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
+
+logging.basicConfig(
+    level=logging.WARNING,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    stream=sys.stderr,
+    force=True,
+)
+logger = logging.getLogger(__name__)
+logging.getLogger("sse_starlette.sse").setLevel(logging.WARNING)  # suppress keepalive ping noise
+# Give our package a direct handler so uvicorn's dictConfig can't suppress DEBUG output.
+if os.getenv("DEBUG"):
+    _pkg_logger = logging.getLogger("mcp_google_sheets")
+    _pkg_logger.setLevel(logging.DEBUG)
+    _h = logging.StreamHandler(sys.stderr)
+    _h.setLevel(logging.DEBUG)
+    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    _pkg_logger.addHandler(_h)
+    _pkg_logger.propagate = False
 
 # MCP imports
 from mcp.server.fastmcp import FastMCP, Context
@@ -143,8 +164,9 @@ async def spreadsheet_lifespan(server: FastMCP) -> AsyncIterator[SpreadsheetCont
             raise Exception("All authentication methods failed. Please configure credentials.")
     
     # Build the services
-    sheets_service = build('sheets', 'v4', credentials=creds)
-    drive_service = build('drive', 'v3', credentials=creds)
+    # cache_discovery=False: file cache requires oauth2client<4.0; all auth paths here use google-auth
+    sheets_service = build('sheets', 'v4', credentials=creds, cache_discovery=False)
+    drive_service = build('drive', 'v3', credentials=creds, cache_discovery=False)
     
     try:
         # Provide the service in the context
@@ -175,34 +197,46 @@ mcp = FastMCP("Google Spreadsheet",
               port=_resolved_port)
 
 
+def _timed(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        start = time.perf_counter()
+        try:
+            return func(*args, **kwargs)
+        finally:
+            logger.debug("%s took %.3fs", func.__name__, time.perf_counter() - start)
+    return wrapper
+
+
 def tool(annotations: Optional[ToolAnnotations] = None):
     """
     Conditional tool decorator that only registers tools if they're enabled.
-    
+
     This wrapper checks ENABLED_TOOLS configuration and only applies the @mcp.tool
     decorator if the tool should be enabled. If ENABLED_TOOLS is None (default),
     all tools are enabled.
-    
+
     Args:
         annotations: Optional ToolAnnotations for the tool
-    
+
     Returns:
         Decorator function
     """
     def decorator(func):
         tool_name = func.__name__
-        
+
         # If no filtering is configured, or if this tool is in the enabled list
         if ENABLED_TOOLS is None or tool_name in ENABLED_TOOLS:
-            # Apply the mcp.tool decorator
+            # Apply the mcp.tool decorator with per-tool timing
+            timed = _timed(func)
             if annotations:
-                return mcp.tool(annotations=annotations)(func)
+                return mcp.tool(annotations=annotations)(timed)
             else:
-                return mcp.tool()(func)
+                return mcp.tool()(timed)
         else:
             # Don't register this tool - return the function undecorated
             return func
-    
+
     return decorator
 
 
