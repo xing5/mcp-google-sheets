@@ -53,7 +53,7 @@ Source: `gh` authenticated as `xing5`, repo `xing5/mcp-google-sheets`.
 ## Maintenance Notes
 
 - Test policy: no new feature implementation should proceed without a written test plan and local unit tests. Live Google tests are opt-in through the `Google Integration Tests` workflow.
-- Release policy: PyPI publishing is gated on the live Google integration test job in the `Publishing` workflow.
+- Release policy: PyPI publishing is gated on the live Google integration test job in the `Publishing` workflow. The live suite covers every current MCP tool function and fails if new tools are added without integration coverage.
 - Useful live-test setup: add GitHub secrets `GOOGLE_DRIVE_FOLDER_ID` and either `GOOGLE_SERVICE_ACCOUNT_JSON` or `GOOGLE_CREDENTIALS_CONFIG`. The folder must be disposable because tests create and delete spreadsheets.
 - Once the new test workflow is merged, require the `Unit tests` check on PRs before reviewing feature changes.
 - Many open issues are solved by current `main` but remain open because docs/comments were not updated.

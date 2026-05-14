@@ -40,6 +40,7 @@ jobs:
       DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
       CREDENTIALS_CONFIG: ${{ secrets.GOOGLE_CREDENTIALS_CONFIG }}
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+      GOOGLE_TEST_SHARE_EMAIL: ${{ secrets.GOOGLE_TEST_SHARE_EMAIL }}
 
     steps:
       - uses: actions/checkout@v4
