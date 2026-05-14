@@ -14,3 +14,9 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Gourmand AI
+.gourmand-cache/
+
+# Git worktrees
+.worktrees/

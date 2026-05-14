@@ -1,0 +1,43 @@
+# Gourmand Exceptions
+#
+# This file documents code quality exceptions that are justified
+# for this project. Each exception should include:
+# - Rule being excepted
+# - Location (file/function)
+# - Justification explaining why the code is correct as-is
+
+[[exception]]
+rule = "copy_paste_detection"
+location = "src/mcp_google_sheets/server.py"
+description = "Duplicate code cluster in batch operation functions"
+justification = """
+Functions that perform batch operations (share_spreadsheet, etc.) follow
+the same pattern of iterating through lists and handling per-item errors.
+This is the standard error handling pattern for batch operations where:
+- Each item can succeed or fail independently
+- Partial success is acceptable
+- All errors must be reported back to the user
+
+The pattern is:
+```python
+successes = []
+failures = []
+for item in items:
+    try:
+        # specific operation for this batch type
+        successes.append(result)
+    except Exception as e:
+        failures.append(error_details)
+return {"successes": successes, "failures": failures}
+```
+
+This is idiomatic for batch operations. The operations within the loop are
+domain-specific (sharing permissions, creating sheets, etc.) and cannot be
+easily abstracted without losing clarity. Extracting a generic "batch processor"
+would require passing operation logic as parameters, making the code harder to
+understand and maintain.
+
+This pattern appears in multiple functions because batch operations are a
+common requirement when working with Google APIs, and this is the correct
+way to handle them.
+"""
