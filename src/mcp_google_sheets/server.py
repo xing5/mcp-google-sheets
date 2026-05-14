@@ -5,6 +5,7 @@ A Model Context Protocol (MCP) server built with FastMCP for interacting with Go
 """
 
 import base64
+import functools
 import os
 import sys
 from typing import List, Dict, Any, Optional, Union
@@ -178,31 +179,36 @@ mcp = FastMCP("Google Spreadsheet",
 def tool(annotations: Optional[ToolAnnotations] = None):
     """
     Conditional tool decorator that only registers tools if they're enabled.
-    
+
     This wrapper checks ENABLED_TOOLS configuration and only applies the @mcp.tool
     decorator if the tool should be enabled. If ENABLED_TOOLS is None (default),
     all tools are enabled.
-    
+
     Args:
         annotations: Optional ToolAnnotations for the tool
-    
+
     Returns:
         Decorator function
     """
     def decorator(func):
         tool_name = func.__name__
-        
+
         # If no filtering is configured, or if this tool is in the enabled list
         if ENABLED_TOOLS is None or tool_name in ENABLED_TOOLS:
+            # Wrap the function using functools.wraps to preserve signature for MCP
+            @functools.wraps(func)
+            def wrapper(*args, **kwargs):
+                return func(*args, **kwargs)
+
             # Apply the mcp.tool decorator
             if annotations:
-                return mcp.tool(annotations=annotations)(func)
+                return mcp.tool(annotations=annotations)(wrapper)
             else:
-                return mcp.tool()(func)
+                return mcp.tool()(wrapper)
         else:
             # Don't register this tool - return the function undecorated
             return func
-    
+
     return decorator
 
 
