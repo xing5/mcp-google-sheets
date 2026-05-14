@@ -1,3 +1,4 @@
+import ast
 import os
 import sys
 import unittest
@@ -146,6 +147,44 @@ class ParseEnabledToolsTests(unittest.TestCase):
         with patch.object(sys, "argv", ["mcp-google-sheets"]):
             with patch.dict(os.environ, {}, clear=True):
                 self.assertIsNone(server._parse_enabled_tools())
+
+
+class StdioSafetyTests(unittest.TestCase):
+    def test_server_module_does_not_call_print(self):
+        source_path = os.path.abspath(server.__file__)
+        with open(source_path, "r", encoding="utf-8") as source_file:
+            tree = ast.parse(source_file.read(), filename=source_path)
+
+        print_calls = [
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "print"
+        ]
+
+        self.assertEqual(print_calls, [])
+
+    def test_main_writes_no_diagnostics_to_stdout(self):
+        with patch.object(server.mcp, "run") as run:
+            with patch.object(server, "_configure_logging"):
+                with patch.object(server.logger, "info"):
+                    with patch.object(sys, "argv", ["mcp-google-sheets"]):
+                        with redirect_stdout(StringIO()) as stdout:
+                            server.main()
+
+        self.assertEqual(stdout.getvalue(), "")
+        run.assert_called_once_with(transport="stdio")
+
+    def test_main_configures_logging(self):
+        with patch.object(server.mcp, "run") as run:
+            with patch.object(server, "_configure_logging") as configure_logging:
+                with patch.object(server.logger, "info"):
+                    with patch.object(sys, "argv", ["mcp-google-sheets"]):
+                        server.main()
+
+        configure_logging.assert_called_once_with()
+        run.assert_called_once_with(transport="stdio")
 
 
 class A1HelperTests(unittest.TestCase):
@@ -343,7 +382,7 @@ class ToolRequestConstructionTests(unittest.TestCase):
     def test_create_spreadsheet_targets_requested_folder(self):
         drive_service = RecordingDriveService()
 
-        with redirect_stdout(StringIO()):
+        with patch.object(server.logger, "info"):
             result = server.create_spreadsheet(
                 "Created Sheet",
                 folder_id="folder-id",
