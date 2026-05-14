@@ -176,6 +176,47 @@ class A1HelperTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             server._parse_a1_notation("not a range")
 
+    def test_split_chart_source_ranges_splits_multi_column_table(self):
+        source_range = {
+            "sheetId": 123,
+            "startRowIndex": 0,
+            "endRowIndex": 3,
+            "startColumnIndex": 0,
+            "endColumnIndex": 3,
+        }
+
+        domain_range, series_ranges = server._split_chart_source_ranges(source_range)
+
+        self.assertEqual(
+            domain_range,
+            {
+                "sheetId": 123,
+                "startRowIndex": 0,
+                "endRowIndex": 3,
+                "startColumnIndex": 0,
+                "endColumnIndex": 1,
+            },
+        )
+        self.assertEqual(
+            series_ranges,
+            [
+                {
+                    "sheetId": 123,
+                    "startRowIndex": 0,
+                    "endRowIndex": 3,
+                    "startColumnIndex": 1,
+                    "endColumnIndex": 2,
+                },
+                {
+                    "sheetId": 123,
+                    "startRowIndex": 0,
+                    "endRowIndex": 3,
+                    "startColumnIndex": 2,
+                    "endColumnIndex": 3,
+                },
+            ],
+        )
+
 
 class ToolRequestConstructionTests(unittest.TestCase):
     def test_get_sheet_data_uses_values_api_by_default(self):
@@ -403,6 +444,30 @@ class ToolRequestConstructionTests(unittest.TestCase):
         self.assertEqual(call["spreadsheetId"], "spreadsheet-id")
         self.assertEqual(add_chart["spec"]["title"], "Trend")
         self.assertEqual(add_chart["spec"]["basicChart"]["chartType"], "LINE")
+        self.assertEqual(
+            add_chart["spec"]["basicChart"]["domains"][0]["domain"]["sourceRange"]["sources"],
+            [
+                {
+                    "sheetId": 123,
+                    "startColumnIndex": 0,
+                    "startRowIndex": 0,
+                    "endColumnIndex": 1,
+                    "endRowIndex": 5,
+                }
+            ],
+        )
+        self.assertEqual(
+            add_chart["spec"]["basicChart"]["series"][0]["series"]["sourceRange"]["sources"],
+            [
+                {
+                    "sheetId": 123,
+                    "startColumnIndex": 1,
+                    "startRowIndex": 0,
+                    "endColumnIndex": 2,
+                    "endRowIndex": 5,
+                }
+            ],
+        )
         self.assertEqual(
             add_chart["position"]["overlayPosition"],
             {

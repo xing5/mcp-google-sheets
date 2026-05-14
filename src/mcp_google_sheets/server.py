@@ -1303,6 +1303,34 @@ def _get_sheet_id(sheets_service: Any, spreadsheet_id: str, sheet_name: str) -> 
         return None
 
 
+def _split_chart_source_ranges(source_range: Dict[str, int]) -> tuple[Dict[str, int], List[Dict[str, int]]]:
+    """
+    Split a chart source range into a domain range and series ranges.
+
+    Google chart ranges must be either a single row or a single column. For the common
+    table shape (first column labels, remaining columns numeric series), split by column.
+    """
+    start_col = source_range.get("startColumnIndex")
+    end_col = source_range.get("endColumnIndex")
+
+    if start_col is None or end_col is None or end_col - start_col <= 1:
+        return source_range, [source_range]
+
+    domain_range = {
+        **source_range,
+        "endColumnIndex": start_col + 1,
+    }
+    series_ranges = [
+        {
+            **source_range,
+            "startColumnIndex": col,
+            "endColumnIndex": col + 1,
+        }
+        for col in range(start_col + 1, end_col)
+    ]
+    return domain_range, series_ranges
+
+
 @tool(
     annotations=ToolAnnotations(
         title="Find Cells",
@@ -1568,12 +1596,9 @@ def add_chart(spreadsheet_id: str,
         "sheetId": sheet_id,
         **range_indices
     }
+    domain_range, series_ranges = _split_chart_source_ranges(source_range)
     
     # Build chart specification based on chart type
-    # Note: For basic charts, using the same source_range for both domains and series
-    # allows the API to automatically interpret the first column as the domain (X-axis labels)
-    # and subsequent columns as data series (Y-axis values). This is the standard behavior
-    # for most chart types and works correctly for typical use cases.
     if chart_type == "PIE":
         # Pie charts use a different spec structure
         chart_spec = {
@@ -1581,12 +1606,12 @@ def add_chart(spreadsheet_id: str,
                 "legendPosition": "RIGHT_LEGEND",
                 "domain": {
                     "sourceRange": {
-                        "sources": [source_range]
+                        "sources": [domain_range]
                     }
                 },
                 "series": {
                     "sourceRange": {
-                        "sources": [source_range]
+                        "sources": [series_ranges[0]]
                     }
                 }
             }
@@ -1603,18 +1628,21 @@ def add_chart(spreadsheet_id: str,
                 "domains": [{
                     "domain": {
                         "sourceRange": {
-                            "sources": [source_range]
+                            "sources": [domain_range]
                         }
                     }
                 }],
-                "series": [{
-                    "series": {
-                        "sourceRange": {
-                            "sources": [source_range]
-                        }
-                    },
-                    "targetAxis": "LEFT_AXIS"
-                }],
+                "series": [
+                    {
+                        "series": {
+                            "sourceRange": {
+                                "sources": [series_range]
+                            }
+                        },
+                        "targetAxis": "LEFT_AXIS"
+                    }
+                    for series_range in series_ranges
+                ],
                 "headerCount": 1
             }
         }
