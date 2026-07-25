@@ -1315,6 +1315,61 @@ def _get_sheet_id(sheets_service: Any, spreadsheet_id: str, sheet_name: str) -> 
         return None
 
 
+def _get_sheet_id_map(sheets_service: Any, spreadsheet_id: str) -> Dict[str, int]:
+    """Return a mapping of sheet title -> sheetId for every sheet in the spreadsheet."""
+    spreadsheet = sheets_service.spreadsheets().get(
+        spreadsheetId=spreadsheet_id,
+        fields='sheets(properties(title,sheetId))'
+    ).execute()
+    return {
+        sheet['properties']['title']: sheet['properties']['sheetId']
+        for sheet in spreadsheet.get('sheets', [])
+    }
+
+
+_VALID_PASTE_TYPES = {
+    "PASTE_NORMAL",
+    "PASTE_VALUES",
+    "PASTE_FORMAT",
+    "PASTE_NO_BORDERS",
+    "PASTE_FORMULA",
+    "PASTE_DATA_VALIDATION",
+    "PASTE_CONDITIONAL_FORMATTING",
+}
+_VALID_PASTE_ORIENTATIONS = {"NORMAL", "TRANSPOSE"}
+
+
+def _a1_to_grid_range(range_str: str, sheet_id_map: Dict[str, int]) -> Dict[str, int]:
+    """
+    Convert a sheet-qualified A1 range (e.g. "Sheet1!A2:H2" or "'SD EXT'!A1:B2")
+    into a GridRange dict {sheetId, startRowIndex, endRowIndex, startColumnIndex, endColumnIndex}.
+
+    `sheet_id_map` maps sheet title -> sheetId (see _get_sheet_id_map).
+    Raises ValueError if the sheet prefix is missing, the sheet is not in the map,
+    or the A1 portion is empty/invalid.
+    """
+    if "!" not in range_str:
+        raise ValueError(
+            f"Range '{range_str}' must include a sheet name, e.g. \"Sheet1!A1:B2\""
+        )
+
+    sheet_part, a1_part = range_str.rsplit("!", 1)
+    sheet_name = sheet_part.strip()
+    if len(sheet_name) >= 2 and sheet_name.startswith("'") and sheet_name.endswith("'"):
+        sheet_name = sheet_name[1:-1].replace("''", "'")
+
+    a1_part = a1_part.strip()
+    if not a1_part:
+        raise ValueError(f"Range '{range_str}' has no cell range after '!'")
+
+    if sheet_name not in sheet_id_map:
+        raise ValueError(f"Sheet '{sheet_name}' not found in spreadsheet")
+
+    grid: Dict[str, int] = {"sheetId": sheet_id_map[sheet_name]}
+    grid.update(_parse_a1_notation(a1_part))
+    return grid
+
+
 def _split_chart_source_ranges(source_range: Dict[str, int]) -> tuple[Dict[str, int], List[Dict[str, int]]]:
     """
     Split a chart source range into a domain range and series ranges.
@@ -1507,7 +1562,86 @@ def batch_update(spreadsheet_id: str,
         spreadsheetId=spreadsheet_id,
         body=request_body
     ).execute()
-    
+
+    return result
+
+
+@tool(
+    annotations=ToolAnnotations(
+        title="Copy Paste Range",
+        destructiveHint=True,
+    ),
+)
+def copy_paste(spreadsheet_id: str,
+               source_range: str,
+               destination_range: str,
+               paste_type: str = "PASTE_NORMAL",
+               paste_orientation: str = "NORMAL",
+               ctx: Context = None) -> Dict[str, Any]:
+    """
+    Copy a source cell range to a destination range within a single spreadsheet,
+    preserving formatting and formulas (like Google Sheets copy/paste).
+
+    Source and destination may be on different sheets (tabs) of the SAME spreadsheet.
+    Copying across different spreadsheets is not supported (use copy_sheet for whole tabs).
+
+    If the destination is larger than the source, the source is tiled to fill it.
+    If the destination is a single anchor cell, the source is pasted once at that cell.
+
+    Args:
+        spreadsheet_id: The ID of the spreadsheet (found in the URL).
+        source_range: Sheet-qualified A1 range to copy from, e.g. "Sheet1!A2:H2"
+                      (quote names with spaces: "'SD EXT'!A2:H2").
+        destination_range: Sheet-qualified A1 range or anchor cell to paste into,
+                           e.g. "Sheet1!A10:H15" or "Sheet1!A10".
+        paste_type: One of PASTE_NORMAL (default), PASTE_VALUES, PASTE_FORMAT,
+                    PASTE_NO_BORDERS, PASTE_FORMULA, PASTE_DATA_VALIDATION,
+                    PASTE_CONDITIONAL_FORMATTING. Case-insensitive.
+        paste_orientation: NORMAL (default) or TRANSPOSE. Case-insensitive.
+
+    Returns:
+        The batchUpdate API result, or {"error": "..."} on invalid input.
+    """
+    paste_type = paste_type.upper()
+    paste_orientation = paste_orientation.upper()
+
+    if paste_type not in _VALID_PASTE_TYPES:
+        return {
+            "error": f"Invalid paste_type '{paste_type}'. "
+                     f"Must be one of: {sorted(_VALID_PASTE_TYPES)}"
+        }
+    if paste_orientation not in _VALID_PASTE_ORIENTATIONS:
+        return {
+            "error": f"Invalid paste_orientation '{paste_orientation}'. "
+                     f"Must be one of: {sorted(_VALID_PASTE_ORIENTATIONS)}"
+        }
+
+    sheets_service = ctx.request_context.lifespan_context.sheets_service
+    sheet_id_map = _get_sheet_id_map(sheets_service, spreadsheet_id)
+
+    try:
+        source_grid = _a1_to_grid_range(source_range, sheet_id_map)
+    except ValueError as exc:
+        return {"error": f"source_range: {exc}"}
+    try:
+        destination_grid = _a1_to_grid_range(destination_range, sheet_id_map)
+    except ValueError as exc:
+        return {"error": f"destination_range: {exc}"}
+
+    request = {
+        "copyPaste": {
+            "source": source_grid,
+            "destination": destination_grid,
+            "pasteType": paste_type,
+            "pasteOrientation": paste_orientation,
+        }
+    }
+
+    result = sheets_service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={"requests": [request]},
+    ).execute()
+
     return result
 
 

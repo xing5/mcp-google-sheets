@@ -257,6 +257,37 @@ class A1HelperTests(unittest.TestCase):
         )
 
 
+class A1GridRangeTests(unittest.TestCase):
+    def test_builds_grid_range_from_sheet_and_a1(self):
+        grid = server._a1_to_grid_range("Sheet1!A2:H2", {"Sheet1": 123})
+        self.assertEqual(
+            grid,
+            {
+                "sheetId": 123,
+                "startColumnIndex": 0,
+                "startRowIndex": 1,
+                "endColumnIndex": 8,
+                "endRowIndex": 2,
+            },
+        )
+
+    def test_quoted_sheet_name_with_spaces(self):
+        grid = server._a1_to_grid_range("'SD EXT'!A1:B2", {"SD EXT": 789})
+        self.assertEqual(grid["sheetId"], 789)
+
+    def test_quoted_sheet_name_unescapes_doubled_quote(self):
+        grid = server._a1_to_grid_range("'O''Brien'!A1", {"O'Brien": 5})
+        self.assertEqual(grid["sheetId"], 5)
+
+    def test_missing_sheet_prefix_raises(self):
+        with self.assertRaises(ValueError):
+            server._a1_to_grid_range("A1:B2", {"Sheet1": 123})
+
+    def test_unknown_sheet_raises(self):
+        with self.assertRaises(ValueError):
+            server._a1_to_grid_range("Nope!A1:B2", {"Sheet1": 123})
+
+
 class ToolRequestConstructionTests(unittest.TestCase):
     def test_get_sheet_data_uses_values_api_by_default(self):
         sheets_service = RecordingSheetsService()
@@ -517,6 +548,166 @@ class ToolRequestConstructionTests(unittest.TestCase):
                 "heightPixels": 200,
             },
         )
+
+
+class CopyPasteTests(unittest.TestCase):
+    def _batch_calls(self, sheets_service):
+        return [
+            c
+            for c in sheets_service.spreadsheets_resource.calls
+            if c[0] == "spreadsheets.batchUpdate"
+        ]
+
+    def test_builds_copy_paste_request_with_defaults(self):
+        sheets_service = RecordingSheetsService()
+        result = server.copy_paste(
+            "spreadsheet-id",
+            "Sheet1!A2:H2",
+            "Sheet1!A10:H15",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertEqual(
+            result, sheets_service.spreadsheets_resource.batch_update_result
+        )
+        calls = self._batch_calls(sheets_service)
+        self.assertEqual(len(calls), 1)
+        kwargs = calls[0][1]
+        self.assertEqual(kwargs["spreadsheetId"], "spreadsheet-id")
+        requests = kwargs["body"]["requests"]
+        self.assertEqual(len(requests), 1)
+        cp = requests[0]["copyPaste"]
+        self.assertEqual(
+            cp["source"],
+            {
+                "sheetId": 123,
+                "startColumnIndex": 0,
+                "startRowIndex": 1,
+                "endColumnIndex": 8,
+                "endRowIndex": 2,
+            },
+        )
+        self.assertEqual(
+            cp["destination"],
+            {
+                "sheetId": 123,
+                "startColumnIndex": 0,
+                "startRowIndex": 9,
+                "endColumnIndex": 8,
+                "endRowIndex": 15,
+            },
+        )
+        self.assertEqual(cp["pasteType"], "PASTE_NORMAL")
+        self.assertEqual(cp["pasteOrientation"], "NORMAL")
+
+    def test_anchor_cell_destination(self):
+        sheets_service = RecordingSheetsService()
+        server.copy_paste(
+            "spreadsheet-id",
+            "Sheet1!A2:H2",
+            "Sheet1!A10",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+        cp = self._batch_calls(sheets_service)[0][1]["body"]["requests"][0]["copyPaste"]
+        self.assertEqual(
+            cp["destination"],
+            {
+                "sheetId": 123,
+                "startColumnIndex": 0,
+                "startRowIndex": 9,
+                "endColumnIndex": 1,
+                "endRowIndex": 10,
+            },
+        )
+
+    def test_cross_tab_resolves_two_sheet_ids(self):
+        sheets_service = RecordingSheetsService()
+        server.copy_paste(
+            "spreadsheet-id",
+            "Sheet1!A2:H2",
+            "Data!A1:H10",
+            paste_type="PASTE_FORMAT",
+            paste_orientation="TRANSPOSE",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+        cp = self._batch_calls(sheets_service)[0][1]["body"]["requests"][0]["copyPaste"]
+        self.assertEqual(cp["source"]["sheetId"], 123)
+        self.assertEqual(cp["destination"]["sheetId"], 456)
+        self.assertEqual(cp["pasteType"], "PASTE_FORMAT")
+        self.assertEqual(cp["pasteOrientation"], "TRANSPOSE")
+
+    def test_invalid_paste_type_returns_error_without_api_call(self):
+        sheets_service = RecordingSheetsService()
+        result = server.copy_paste(
+            "spreadsheet-id",
+            "Sheet1!A1:B2",
+            "Sheet1!D1:E2",
+            paste_type="BOGUS",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+        self.assertIn("error", result)
+        self.assertIn("paste_type", result["error"])
+        self.assertEqual(self._batch_calls(sheets_service), [])
+
+    def test_invalid_paste_orientation_returns_error(self):
+        sheets_service = RecordingSheetsService()
+        result = server.copy_paste(
+            "spreadsheet-id",
+            "Sheet1!A1:B2",
+            "Sheet1!D1:E2",
+            paste_orientation="SIDEWAYS",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+        self.assertIn("error", result)
+        self.assertIn("paste_orientation", result["error"])
+        self.assertEqual(self._batch_calls(sheets_service), [])
+
+    def test_unknown_sheet_returns_error(self):
+        sheets_service = RecordingSheetsService()
+        result = server.copy_paste(
+            "spreadsheet-id",
+            "Nope!A1:B2",
+            "Sheet1!D1:E2",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+        self.assertIn("error", result)
+        self.assertEqual(self._batch_calls(sheets_service), [])
+
+    def test_missing_sheet_prefix_returns_error(self):
+        sheets_service = RecordingSheetsService()
+        result = server.copy_paste(
+            "spreadsheet-id",
+            "A1:B2",
+            "Sheet1!D1:E2",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+        self.assertIn("error", result)
+        self.assertEqual(self._batch_calls(sheets_service), [])
+
+    def test_paste_args_are_case_insensitive(self):
+        sheets_service = RecordingSheetsService()
+        server.copy_paste(
+            "spreadsheet-id",
+            "Sheet1!A1:B2",
+            "Sheet1!D1:E2",
+            paste_type="paste_values",
+            paste_orientation="transpose",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+        cp = self._batch_calls(sheets_service)[0][1]["body"]["requests"][0]["copyPaste"]
+        self.assertEqual(cp["pasteType"], "PASTE_VALUES")
+        self.assertEqual(cp["pasteOrientation"], "TRANSPOSE")
+
+    def test_error_message_identifies_destination_range(self):
+        sheets_service = RecordingSheetsService()
+        result = server.copy_paste(
+            "spreadsheet-id",
+            "Sheet1!A1:B2",
+            "Nope!D1:E2",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+        self.assertIn("destination_range", result["error"])
+        self.assertEqual(self._batch_calls(sheets_service), [])
 
 
 if __name__ == "__main__":
