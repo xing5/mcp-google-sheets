@@ -252,6 +252,13 @@ _Refer to the [ID Reference Guide](#-id-reference-guide) for more information ab
     *   `dst_spreadsheet` (string): Destination spreadsheet ID (from its URL).
     *   `dst_sheet` (string): Desired sheet/tab name in the destination spreadsheet.
     *   _Returns:_ Result of the copy and optional rename operations.
+*   **`copy_paste`**: Copy a cell range (formatting/formulas) to another range within a spreadsheet; supports cross-tab, paste type, and transpose.
+    *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
+    *   `source_range` (string): Sheet-qualified A1 range to copy from (e.g., `"Sheet1!A2:H2"`; quote names with spaces: `"'SD EXT'!A2:H2"`).
+    *   `destination_range` (string): Sheet-qualified A1 range or anchor cell to paste into (e.g., `"Sheet1!A10:H15"` or `"Sheet1!A10"`). Source and destination may be on different sheets/tabs of the same spreadsheet.
+    *   `paste_type` (optional string, default `PASTE_NORMAL`): One of `PASTE_NORMAL`, `PASTE_VALUES`, `PASTE_FORMAT`, `PASTE_NO_BORDERS`, `PASTE_FORMULA`, `PASTE_DATA_VALIDATION`, `PASTE_CONDITIONAL_FORMATTING`.
+    *   `paste_orientation` (optional string, default `NORMAL`): `NORMAL` or `TRANSPOSE`.
+    *   _Returns:_ Result of the operation ([`batchUpdate` response](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/batchUpdate#response-body)).
 *   **`rename_sheet`**: Renames an existing sheet/tab.
     *   `spreadsheet` (string): The spreadsheet ID (from its URL).
     *   `sheet` (string): Current sheet/tab name (e.g., "Sheet1").
