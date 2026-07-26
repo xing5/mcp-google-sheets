@@ -24,6 +24,7 @@ from google.oauth2 import service_account
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 import google.auth
 
 logger = logging.getLogger(__name__)
@@ -880,6 +881,57 @@ def get_spreadsheet_info(spreadsheet_id: str) -> str:
     return json.dumps(info, indent=2)
 
 
+def _is_storage_quota_error(error: HttpError) -> bool:
+    """Return True if an HttpError is Google Drive's 'storageQuotaExceeded' error.
+
+    Detection is based on the stable machine-readable reason string, with a
+    fallback to the human-readable message, so it survives minor API wording
+    changes.
+    """
+    content = getattr(error, "content", b"") or b""
+    if isinstance(content, bytes):
+        content = content.decode("utf-8", errors="replace")
+    haystack = f"{content}\n{error}".lower()
+    return "storagequotaexceeded" in haystack or "storage quota" in haystack
+
+
+def _storage_quota_help(target_folder_id: Optional[str]) -> str:
+    """Build an accurate, actionable message for a storage-quota failure.
+
+    The raw Google error ("The user's Drive storage quota has been exceeded")
+    is misleading: when the server authenticates with a service account, the
+    account has no Drive storage of its own, so creating a file in its
+    "My Drive" always fails -- regardless of how much space the human user has.
+    """
+    if target_folder_id:
+        location = (
+            f"the target folder '{target_folder_id}'. The service account may "
+            f"lack Editor access to that folder, or the folder lives in a "
+            f"regular (non-Shared) Drive owned by the service account."
+        )
+    else:
+        location = (
+            "the service account's own 'My Drive' (no folder was specified and "
+            "DRIVE_FOLDER_ID is not set). Service accounts have zero Drive "
+            "storage, so this can never succeed."
+        )
+    return (
+        "Google rejected the spreadsheet creation with 'storageQuotaExceeded' "
+        f"while writing to {location}\n\n"
+        "This is NOT your personal Google Drive being full. It almost always "
+        "means the server is using a service account, which owns no Drive "
+        "storage. Fix it in one of these ways:\n"
+        "  1. Create a folder in a real user's Drive, share it with the service "
+        "account as Editor, and set DRIVE_FOLDER_ID to that folder's ID (or "
+        "pass it as folder_id). Files created there are owned by that user.\n"
+        "  2. Use a Google Shared Drive: share it with the service account and "
+        "pass its ID as folder_id / DRIVE_FOLDER_ID.\n"
+        "  3. Switch to OAuth user credentials (CREDENTIALS_PATH / TOKEN_PATH) "
+        "so new files are owned by your account.\n"
+        "See the README authentication section for details."
+    )
+
+
 @tool(
     annotations=ToolAnnotations(
         title="Create Spreadsheet",
@@ -910,11 +962,18 @@ def create_spreadsheet(title: str, folder_id: Optional[str] = None, ctx: Context
     if target_folder_id:
         file_body['parents'] = [target_folder_id]
     
-    spreadsheet = drive_service.files().create(
-        supportsAllDrives=True,
-        body=file_body,
-        fields='id, name, parents'
-    ).execute()
+    try:
+        spreadsheet = drive_service.files().create(
+            supportsAllDrives=True,
+            body=file_body,
+            fields='id, name, parents'
+        ).execute()
+    except HttpError as error:
+        if _is_storage_quota_error(error):
+            # Replace Google's misleading "your Drive is full" error with an
+            # accurate explanation of the service-account quota limitation.
+            raise ValueError(_storage_quota_help(target_folder_id)) from error
+        raise
 
     spreadsheet_id = spreadsheet.get('id')
     parents = spreadsheet.get('parents')

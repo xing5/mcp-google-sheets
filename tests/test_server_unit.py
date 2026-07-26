@@ -1,4 +1,5 @@
 import ast
+import json
 import os
 import sys
 import unittest
@@ -6,6 +7,9 @@ from contextlib import redirect_stdout
 from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import patch
+
+from googleapiclient.errors import HttpError
+from httplib2 import Response
 
 from mcp_google_sheets import server
 
@@ -412,6 +416,54 @@ class ToolRequestConstructionTests(unittest.TestCase):
                 },
             ),
         )
+
+    def test_create_spreadsheet_translates_storage_quota_error(self):
+        # Reproduces issue #75: a service account has no Drive storage, so
+        # Google returns "storageQuotaExceeded". The raw error misleads the LLM
+        # into telling the user their Drive is full. We surface an accurate,
+        # actionable message instead.
+        quota_content = json.dumps(
+            {
+                "error": {
+                    "errors": [{"reason": "storageQuotaExceeded"}],
+                    "code": 403,
+                    "message": "The user's Drive storage quota has been exceeded.",
+                }
+            }
+        ).encode("utf-8")
+        quota_error = HttpError(Response({"status": 403}), quota_content)
+
+        drive_service = RecordingDriveService()
+        drive_service.files_resource.create_result = quota_error
+
+        with patch.object(server.logger, "info"):
+            with self.assertRaises(ValueError) as caught:
+                server.create_spreadsheet(
+                    "Quarterly Sales Report Q3 2024",
+                    ctx=fake_ctx(drive_service=drive_service),
+                )
+
+        message = str(caught.exception)
+        self.assertIn("storageQuotaExceeded", message)
+        self.assertIn("service account", message)
+        self.assertIn("DRIVE_FOLDER_ID", message)
+        # Must not parrot Google's misleading "personal Drive is full" framing.
+        self.assertNotIn("free up", message.lower())
+
+    def test_create_spreadsheet_reraises_unrelated_http_errors(self):
+        other_error = HttpError(
+            Response({"status": 500}),
+            b'{"error": {"message": "backend error"}}',
+        )
+        drive_service = RecordingDriveService()
+        drive_service.files_resource.create_result = other_error
+
+        with patch.object(server.logger, "info"):
+            with self.assertRaises(HttpError):
+                server.create_spreadsheet(
+                    "Report",
+                    ctx=fake_ctx(drive_service=drive_service),
+                )
 
     def test_search_spreadsheets_clamps_page_size_and_returns_metadata(self):
         drive_service = RecordingDriveService()
