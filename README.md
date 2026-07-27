@@ -1,3 +1,5 @@
+[![MCP Toplist](https://mcptoplist.com/badge/glama%2Fxing5%2Fmcp-google-sheets.svg)](https://mcptoplist.com/server/glama%2Fxing5%2Fmcp-google-sheets)
+
 <div align="center">
   <!-- Main Title Link -->
   <b>mcp-google-sheets</b>
