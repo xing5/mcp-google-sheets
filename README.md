@@ -327,12 +327,16 @@ _Refer to the [ID Reference Guide](#-id-reference-guide) for more information ab
         *   `CREDENTIALS_PATH`: Path to the downloaded OAuth credentials JSON file (default: `credentials.json`).
         *   `TOKEN_PATH`: Path to store the user's refresh token after first login (default: `token.json`). Must be writable.
 
+
+**Rolling this out to multiple users (e.g. everyone at a company)?** The OAuth Client ID from step 2 is shared, not per-user - Google's own guidance for this "Desktop app" client type doesn't treat its secret as confidential (it can't be kept secret on an end-user device anyway), so distributing the same downloaded JSON to every machine (via your existing install/config process) is a fully supported pattern. Each person just does their own one-time browser consent, which produces their own local `token.json`. If your OAuth consent screen is set to **Internal** (available when everyone is in the same Google Workspace domain), it also skips Google's app-verification review entirely.
+
 ### Method C: Direct Credential Injection (Advanced) 🔒
 
 *   **Why?** Useful in environments like Docker, Kubernetes, or CI/CD where managing files is hard, but environment variables are easy/secure. Avoids file system access.
 *   **How?** Instead of providing a *path* to the credentials file, you provide the *content* of the file, encoded in Base64, directly in an environment variable.
+*   **Note:** `CREDENTIALS_CONFIG` currently only supports **Service Account** key JSON, not OAuth Client ID JSON.
 *   **Steps:**
-    1.  **Get your credentials JSON file** (either Service Account key or OAuth Client ID file). Let's call it `your_credentials.json`.
+    1.  **Get your Service Account key JSON file.** Let's call it `your_credentials.json`.
     2.  **Generate the Base64 string:**
         *   **(Linux/macOS):** `base64 -w 0 your_credentials.json`
         *   **(Windows PowerShell):**
@@ -372,7 +376,7 @@ _Refer to the [ID Reference Guide](#-id-reference-guide) for more information ab
 
 The server checks for credentials in this order:
 
-1.  `CREDENTIALS_CONFIG` (Base64 content)
+1.  `CREDENTIALS_CONFIG` (Base64 content, Service Account only)
 2.  `SERVICE_ACCOUNT_PATH` (Path to Service Account JSON)
 3.  `CREDENTIALS_PATH` (Path to OAuth JSON) - triggers interactive flow if token is missing/expired
 4.  **Application Default Credentials (ADC)** - automatic fallback
@@ -386,7 +390,25 @@ The server checks for credentials in this order:
 | `DRIVE_FOLDER_ID`                | Service Account             | ID of the Google Drive folder shared with the Service Account.   | -                  |
 | `CREDENTIALS_PATH`               | OAuth 2.0                   | Path to the OAuth 2.0 Client ID JSON file.                       | `credentials.json` |
 | `TOKEN_PATH`                     | OAuth 2.0                   | Path to store the generated OAuth token.                         | `token.json`       |
-| `CREDENTIALS_CONFIG`             | Service Account / OAuth 2.0 | Base64 encoded JSON string of credentials content.               | -                  |
+| `CREDENTIALS_CONFIG`             | Service Account             | Base64 encoded JSON string of Service Account key content.       | -                  |
+| `SERVICE_ACCOUNT_EMAIL`          | Any (optional gate)         | See [Restricting Access via a Sharing Gate](#-restricting-access-via-a-sharing-gate-optional) below. | -   |
+
+---
+
+## 🔒 Restricting Access via a Sharing Gate (Optional)
+
+If you authenticate as an end user (OAuth or `gcloud auth application-default login`, i.e. Methods B/D above) rather than a Service Account key, the server calls the Sheets/Drive APIs **as you** - meaning it can technically reach anything your Google account can reach. `SERVICE_ACCOUNT_EMAIL` lets you narrow that down to an explicit allowlist, using the same "share it with this account" gesture as the Service Account method, without actually needing the service account to hold real API access.
+
+**How it works:**
+
+*   Set `SERVICE_ACCOUNT_EMAIL` to a service account's email address (it doesn't need a key file - it's used purely as an identity to check for, e.g. `mcp-google-sheets@your-project.iam.gserviceaccount.com`).
+*   Before any tool touches a spreadsheet, the server checks (via the Drive API, using your own credentials) whether that spreadsheet is shared with `SERVICE_ACCOUNT_EMAIL`. If not, the call fails with a message telling you exactly which account to share it with.
+*   The role you shared it with matters too: **Viewer** access allows read-only tools (`get_sheet_data`, `list_sheets`, `find_in_spreadsheet`, etc.); **Editor** access is required for anything that writes (`update_cells`, `add_rows`, `create_sheet`, `share_spreadsheet`, etc.). Sharing as Viewer but calling a write tool fails with a clear "read-only" error instead of silently attempting the write.
+*   `create_spreadsheet` automatically shares any spreadsheet it creates with `SERVICE_ACCOUNT_EMAIL` as an Editor, so newly created sheets are immediately usable by other tools. Pass `share_with_service_account=false` to opt out for a given call.
+*   Sharing checks are cached per spreadsheet for the life of the server process, so repeated calls don't re-check on every invocation.
+*   **Leave `SERVICE_ACCOUNT_EMAIL` unset and none of this applies** - every tool behaves exactly as it did before this feature existed, with no extra API calls or restrictions.
+
+This is an app-level allowlist, not a Google-enforced ACL boundary - it's enforced by this server's code, not by Google's permission system, so it's a defense-in-depth measure rather than a hard security boundary. It's most useful for keeping an AI tool scoped to a known set of sheets even though the underlying credentials could technically reach more.
 
 ---
 

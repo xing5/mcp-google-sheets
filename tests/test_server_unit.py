@@ -119,19 +119,40 @@ class RecordingFilesResource:
         return FakeRequest(self.list_result)
 
 
+class RecordingPermissionsResource:
+    def __init__(self):
+        self.calls = []
+        self.list_result = {"permissions": []}
+        self.create_result = {"id": "permission-id"}
+
+    def list(self, **kwargs):
+        self.calls.append(("permissions.list", kwargs))
+        return FakeRequest(self.list_result)
+
+    def create(self, **kwargs):
+        self.calls.append(("permissions.create", kwargs))
+        return FakeRequest(self.create_result)
+
+
 class RecordingDriveService:
     def __init__(self):
         self.files_resource = RecordingFilesResource()
+        self.permissions_resource = RecordingPermissionsResource()
 
     def files(self):
         return self.files_resource
 
+    def permissions(self):
+        return self.permissions_resource
 
-def fake_ctx(sheets_service=None, drive_service=None, folder_id=None):
+
+def fake_ctx(sheets_service=None, drive_service=None, folder_id=None, service_account_email=None):
     lifespan_context = SimpleNamespace(
         sheets_service=sheets_service,
         drive_service=drive_service,
         folder_id=folder_id,
+        service_account_email=service_account_email,
+        _shared_role_cache={},
     )
     request_context = SimpleNamespace(lifespan_context=lifespan_context)
     return SimpleNamespace(request_context=request_context)
@@ -395,6 +416,7 @@ class ToolRequestConstructionTests(unittest.TestCase):
                 "spreadsheetId": "spreadsheet-id",
                 "title": "Created Sheet",
                 "folder": "folder-id",
+                "sharedWithServiceAccount": False,
             },
         )
         self.assertEqual(
@@ -517,6 +539,114 @@ class ToolRequestConstructionTests(unittest.TestCase):
                 "heightPixels": 200,
             },
         )
+
+
+
+class ServiceAccountGatingTests(unittest.TestCase):
+    SA_EMAIL = "mcp-google-sheets@fresh-aura-503719-f6.iam.gserviceaccount.com"
+
+    def _lifespan(self, service_account_email=None):
+        drive_service = RecordingDriveService()
+        ctx = fake_ctx(drive_service=drive_service, service_account_email=service_account_email)
+        return ctx.request_context.lifespan_context, drive_service
+
+    def test_noop_when_no_service_account_configured(self):
+        lifespan_context, drive_service = self._lifespan(service_account_email=None)
+
+        server._verify_shared_with_service_account(lifespan_context, "sheet-id", write=True)
+
+        self.assertEqual(drive_service.permissions_resource.calls, [])
+
+    def test_raises_when_not_shared_with_service_account(self):
+        lifespan_context, drive_service = self._lifespan(service_account_email=self.SA_EMAIL)
+        drive_service.permissions_resource.list_result = {"permissions": [
+            {"emailAddress": "someone-else@example.com", "role": "writer"},
+        ]}
+
+        with self.assertRaises(server.ServiceAccountShareRequired):
+            server._verify_shared_with_service_account(lifespan_context, "sheet-id")
+
+    def test_read_allowed_when_shared_as_reader(self):
+        lifespan_context, drive_service = self._lifespan(service_account_email=self.SA_EMAIL)
+        drive_service.permissions_resource.list_result = {"permissions": [
+            {"emailAddress": self.SA_EMAIL, "role": "reader"},
+        ]}
+
+        server._verify_shared_with_service_account(lifespan_context, "sheet-id", write=False)
+
+    def test_write_blocked_when_shared_as_reader_only(self):
+        lifespan_context, drive_service = self._lifespan(service_account_email=self.SA_EMAIL)
+        drive_service.permissions_resource.list_result = {"permissions": [
+            {"emailAddress": self.SA_EMAIL, "role": "reader"},
+        ]}
+
+        with self.assertRaises(server.ServiceAccountShareRequired):
+            server._verify_shared_with_service_account(lifespan_context, "sheet-id", write=True)
+
+    def test_write_allowed_when_shared_as_writer(self):
+        lifespan_context, drive_service = self._lifespan(service_account_email=self.SA_EMAIL)
+        drive_service.permissions_resource.list_result = {"permissions": [
+            {"emailAddress": self.SA_EMAIL, "role": "writer"},
+        ]}
+
+        server._verify_shared_with_service_account(lifespan_context, "sheet-id", write=True)
+
+    def test_permission_lookup_is_cached_per_spreadsheet(self):
+        lifespan_context, drive_service = self._lifespan(service_account_email=self.SA_EMAIL)
+        drive_service.permissions_resource.list_result = {"permissions": [
+            {"emailAddress": self.SA_EMAIL, "role": "writer"},
+        ]}
+
+        server._verify_shared_with_service_account(lifespan_context, "sheet-id", write=True)
+        server._verify_shared_with_service_account(lifespan_context, "sheet-id", write=False)
+
+        list_calls = [c for c in drive_service.permissions_resource.calls if c[0] == "permissions.list"]
+        self.assertEqual(len(list_calls), 1)
+
+    def test_update_cells_blocked_when_spreadsheet_not_shared(self):
+        sheets_service = RecordingSheetsService()
+        drive_service = RecordingDriveService()
+        ctx = fake_ctx(sheets_service=sheets_service, drive_service=drive_service,
+                       service_account_email=self.SA_EMAIL)
+
+        with self.assertRaises(server.ServiceAccountShareRequired):
+            server.update_cells("spreadsheet-id", "Sheet1", "A1:B2", [[1, 2]], ctx=ctx)
+
+    def test_create_spreadsheet_auto_shares_with_configured_service_account(self):
+        drive_service = RecordingDriveService()
+        ctx = fake_ctx(drive_service=drive_service, service_account_email=self.SA_EMAIL)
+
+        with patch.object(server.logger, "info"):
+            result = server.create_spreadsheet("Created Sheet", ctx=ctx)
+
+        self.assertTrue(result["sharedWithServiceAccount"])
+        create_calls = [c for c in drive_service.permissions_resource.calls if c[0] == "permissions.create"]
+        self.assertEqual(len(create_calls), 1)
+        self.assertEqual(create_calls[0][1]["body"], {
+            "type": "user", "role": "writer", "emailAddress": self.SA_EMAIL,
+        })
+
+    def test_create_spreadsheet_skips_sharing_when_flag_false(self):
+        drive_service = RecordingDriveService()
+        ctx = fake_ctx(drive_service=drive_service, service_account_email=self.SA_EMAIL)
+
+        with patch.object(server.logger, "info"):
+            result = server.create_spreadsheet(
+                "Created Sheet", share_with_service_account=False, ctx=ctx
+            )
+
+        self.assertFalse(result["sharedWithServiceAccount"])
+        self.assertEqual(drive_service.permissions_resource.calls, [])
+
+    def test_create_spreadsheet_no_effect_when_service_account_not_configured(self):
+        drive_service = RecordingDriveService()
+        ctx = fake_ctx(drive_service=drive_service, service_account_email=None)
+
+        with patch.object(server.logger, "info"):
+            result = server.create_spreadsheet("Created Sheet", ctx=ctx)
+
+        self.assertFalse(result["sharedWithServiceAccount"])
+        self.assertEqual(drive_service.permissions_resource.calls, [])
 
 
 if __name__ == "__main__":

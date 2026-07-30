@@ -34,6 +34,13 @@ CREDENTIALS_CONFIG = os.environ.get('CREDENTIALS_CONFIG')
 TOKEN_PATH = os.environ.get('TOKEN_PATH', 'token.json')
 CREDENTIALS_PATH = os.environ.get('CREDENTIALS_PATH', 'credentials.json')
 SERVICE_ACCOUNT_PATH = os.environ.get('SERVICE_ACCOUNT_PATH', 'service_account.json')
+# Optional gating service account. When set, every spreadsheet operation is checked
+# against this account's Drive sharing entry before it runs (and the granted role -
+# reader/writer/etc - determines whether write operations are allowed). When unset,
+# every tool behaves exactly as it did before this feature existed: no extra checks,
+# no extra API calls, no lookups of any kind.
+SERVICE_ACCOUNT_EMAIL = os.environ.get('SERVICE_ACCOUNT_EMAIL')
+
 DRIVE_FOLDER_ID = os.environ.get('DRIVE_FOLDER_ID', '')  # Working directory in Google Drive
 
 
@@ -79,6 +86,90 @@ class SpreadsheetContext:
     sheets_service: Any
     drive_service: Any
     folder_id: Optional[str] = None
+    service_account_email: Optional[str] = None
+    _shared_role_cache: Dict[str, str] = None
+
+    def __post_init__(self):
+        if self._shared_role_cache is None:
+            self._shared_role_cache = {}
+
+
+class ServiceAccountShareRequired(PermissionError):
+    """Raised when a spreadsheet operation is blocked by the gating service account's sharing/role."""
+
+
+# Drive permission roles, ordered from least to most access.
+_DRIVE_ROLE_RANK = {
+    'reader': 0,
+    'commenter': 1,
+    'writer': 2,
+    'fileOrganizer': 3,
+    'organizer': 4,
+    'owner': 5,
+}
+_MIN_WRITE_ROLE_RANK = _DRIVE_ROLE_RANK['writer']
+
+
+def _verify_shared_with_service_account(
+    lifespan_context: "SpreadsheetContext", spreadsheet_id: str, write: bool = False
+) -> None:
+    """
+    No-op unless a gating service account (SERVICE_ACCOUNT_EMAIL) is configured.
+
+    When configured, raises ServiceAccountShareRequired unless spreadsheet_id is
+    shared with that account - and, for write operations, unless the granted role
+    is 'writer' or higher.
+    """
+    sa_email = lifespan_context.service_account_email
+    if not sa_email:
+        return
+
+    role = lifespan_context._shared_role_cache.get(spreadsheet_id)
+    if role is None:
+        try:
+            permissions: List[Dict[str, Any]] = []
+            page_token = None
+            while True:
+                resp = lifespan_context.drive_service.permissions().list(
+                    fileId=spreadsheet_id,
+                    fields="nextPageToken, permissions(emailAddress, role)",
+                    pageToken=page_token,
+                    supportsAllDrives=True,
+                ).execute()
+                permissions.extend(resp.get('permissions', []))
+                page_token = resp.get('nextPageToken')
+                if not page_token:
+                    break
+        except Exception as e:
+            raise ServiceAccountShareRequired(
+                f"Could not verify sharing permissions for spreadsheet '{spreadsheet_id}': {e}"
+            )
+
+        match = next(
+            (p for p in permissions if (p.get('emailAddress') or '').lower() == sa_email.lower()),
+            None
+        )
+        if not match:
+            raise ServiceAccountShareRequired(
+                f"Spreadsheet '{spreadsheet_id}' is not shared with the service account '{sa_email}'. "
+                f"Share it with that account (Viewer for read access, Editor for write access) and try again."
+            )
+        role = match.get('role', 'reader')
+        lifespan_context._shared_role_cache[spreadsheet_id] = role
+
+    if write and _DRIVE_ROLE_RANK.get(role, -1) < _MIN_WRITE_ROLE_RANK:
+        raise ServiceAccountShareRequired(
+            f"Spreadsheet '{spreadsheet_id}' is shared with the service account '{sa_email}' as "
+            f"'{role}', which only allows read access. Share it with Editor (writer) access to "
+            f"perform this operation."
+        )
+
+
+def _require_shared(ctx: Context, spreadsheet_id: str, write: bool = False) -> None:
+    """Tool-facing helper: verify sharing/role using the Context passed by FastMCP."""
+    _verify_shared_with_service_account(ctx.request_context.lifespan_context, spreadsheet_id, write=write)
+
+
 
 
 @asynccontextmanager
@@ -158,12 +249,18 @@ async def spreadsheet_lifespan(server: FastMCP) -> AsyncIterator[SpreadsheetCont
     sheets_service = build('sheets', 'v4', credentials=creds, cache_discovery=False)
     drive_service = build('drive', 'v3', credentials=creds, cache_discovery=False)
     
+    # Optional gating service account: no lookups, just the env var as-is. When unset,
+    # every tool behaves exactly as it did before this feature existed.
+    if SERVICE_ACCOUNT_EMAIL:
+        logger.info("Gating spreadsheet access on sharing with service account: %s", SERVICE_ACCOUNT_EMAIL)
+
     try:
         # Provide the service in the context
         yield SpreadsheetContext(
             sheets_service=sheets_service,
             drive_service=drive_service,
-            folder_id=DRIVE_FOLDER_ID if DRIVE_FOLDER_ID else None
+            folder_id=DRIVE_FOLDER_ID if DRIVE_FOLDER_ID else None,
+            service_account_email=SERVICE_ACCOUNT_EMAIL,
         )
     finally:
         # No explicit cleanup needed for Google APIs
@@ -244,6 +341,7 @@ def get_sheet_data(spreadsheet_id: str,
     Returns:
         Grid data structure with either full metadata or just values from Google Sheets API, depending on include_grid_data parameter
     """
+    _require_shared(ctx, spreadsheet_id)
     sheets_service = ctx.request_context.lifespan_context.sheets_service
 
     # Construct the range - keep original API behavior
@@ -298,6 +396,7 @@ def get_sheet_formulas(spreadsheet_id: str,
     Returns:
         A 2D array of the sheet formulas.
     """
+    _require_shared(ctx, spreadsheet_id)
     sheets_service = ctx.request_context.lifespan_context.sheets_service
     
     # Construct the range
@@ -340,6 +439,7 @@ def update_cells(spreadsheet_id: str,
     Returns:
         Result of the update operation
     """
+    _require_shared(ctx, spreadsheet_id, write=True)
     sheets_service = ctx.request_context.lifespan_context.sheets_service
     
     # Construct the range
@@ -383,6 +483,7 @@ def batch_update_cells(spreadsheet_id: str,
     Returns:
         Result of the batch update operation
     """
+    _require_shared(ctx, spreadsheet_id, write=True)
     sheets_service = ctx.request_context.lifespan_context.sheets_service
     
     # Prepare the batch update request
@@ -431,6 +532,7 @@ def add_rows(spreadsheet_id: str,
     Returns:
         Result of the operation
     """
+    _require_shared(ctx, spreadsheet_id, write=True)
     sheets_service = ctx.request_context.lifespan_context.sheets_service
     
     # Get sheet ID
@@ -494,6 +596,7 @@ def add_columns(spreadsheet_id: str,
     Returns:
         Result of the operation
     """
+    _require_shared(ctx, spreadsheet_id, write=True)
     sheets_service = ctx.request_context.lifespan_context.sheets_service
     
     # Get sheet ID
@@ -550,6 +653,7 @@ def list_sheets(spreadsheet_id: str, ctx: Context = None) -> List[str]:
     Returns:
         List of sheet names
     """
+    _require_shared(ctx, spreadsheet_id)
     sheets_service = ctx.request_context.lifespan_context.sheets_service
     
     # Get spreadsheet metadata
@@ -584,6 +688,8 @@ def copy_sheet(src_spreadsheet: str,
     Returns:
         Result of the operation
     """
+    _require_shared(ctx, src_spreadsheet)
+    _require_shared(ctx, dst_spreadsheet, write=True)
     sheets_service = ctx.request_context.lifespan_context.sheets_service
     
     # Get source sheet ID
@@ -661,6 +767,7 @@ def rename_sheet(spreadsheet: str,
     Returns:
         Result of the operation
     """
+    _require_shared(ctx, spreadsheet, write=True)
     sheets_service = ctx.request_context.lifespan_context.sheets_service
     
     # Get sheet ID
@@ -733,6 +840,8 @@ def get_multiple_sheet_data(queries: List[Dict[str, str]],
             continue
 
         try:
+            _require_shared(ctx, spreadsheet_id)
+
             # Construct the range
             full_range = f"{sheet}!{range_str}"
             
@@ -784,6 +893,8 @@ def get_multiple_spreadsheet_summary(spreadsheet_ids: List[str],
             'error': None
         }
         try:
+            _require_shared(ctx, spreadsheet_id)
+
             # Get spreadsheet metadata
             spreadsheet = sheets_service.spreadsheets().get(
                 spreadsheetId=spreadsheet_id,
@@ -859,6 +970,7 @@ def get_spreadsheet_info(spreadsheet_id: str) -> str:
     """
     # Access the context through mcp.get_lifespan_context() for resources
     context = mcp.get_lifespan_context()
+    _verify_shared_with_service_account(context, spreadsheet_id)
     sheets_service = context.sheets_service
     
     # Get spreadsheet metadata
@@ -886,21 +998,28 @@ def get_spreadsheet_info(spreadsheet_id: str) -> str:
         destructiveHint=True,
     ),
 )
-def create_spreadsheet(title: str, folder_id: Optional[str] = None, ctx: Context = None) -> Dict[str, Any]:
+def create_spreadsheet(title: str, folder_id: Optional[str] = None,
+                       share_with_service_account: bool = True,
+                       ctx: Context = None) -> Dict[str, Any]:
     """
     Create a new Google Spreadsheet.
-    
+
     Args:
         title: The title of the new spreadsheet
         folder_id: Optional Google Drive folder ID where the spreadsheet should be created.
                   If not provided, uses the configured default folder or creates in root.
-    
+        share_with_service_account: If a gating service account (SERVICE_ACCOUNT_EMAIL) is
+                  configured, automatically share the new spreadsheet with it as a writer so
+                  it's immediately usable by other tools. Has no effect if no gating service
+                  account is configured. Defaults to True.
+
     Returns:
         Information about the newly created spreadsheet including its ID
     """
-    drive_service = ctx.request_context.lifespan_context.drive_service
+    lifespan_context = ctx.request_context.lifespan_context
+    drive_service = lifespan_context.drive_service
     # Use provided folder_id or fall back to configured default
-    target_folder_id = folder_id or ctx.request_context.lifespan_context.folder_id
+    target_folder_id = folder_id or lifespan_context.folder_id
 
     # Create the spreadsheet
     file_body = {
@@ -909,7 +1028,7 @@ def create_spreadsheet(title: str, folder_id: Optional[str] = None, ctx: Context
     }
     if target_folder_id:
         file_body['parents'] = [target_folder_id]
-    
+
     spreadsheet = drive_service.files().create(
         supportsAllDrives=True,
         body=file_body,
@@ -921,10 +1040,27 @@ def create_spreadsheet(title: str, folder_id: Optional[str] = None, ctx: Context
     folder_info = f" in folder {target_folder_id}" if target_folder_id else " in root"
     logger.info("Spreadsheet created with ID: %s%s", spreadsheet_id, folder_info)
 
+    shared_with_service_account = False
+    sa_email = lifespan_context.service_account_email
+    if sa_email and share_with_service_account:
+        try:
+            drive_service.permissions().create(
+                fileId=spreadsheet_id,
+                body={'type': 'user', 'role': 'writer', 'emailAddress': sa_email},
+                sendNotificationEmail=False,
+                fields='id',
+            ).execute()
+            lifespan_context._shared_role_cache[spreadsheet_id] = 'writer'
+            shared_with_service_account = True
+            logger.info("Shared new spreadsheet %s with service account %s (writer)", spreadsheet_id, sa_email)
+        except Exception as e:
+            logger.error("Failed to share new spreadsheet %s with service account %s: %s", spreadsheet_id, sa_email, e)
+
     return {
         'spreadsheetId': spreadsheet_id,
         'title': spreadsheet.get('name', title),
         'folder': parents[0] if parents else 'root',
+        'sharedWithServiceAccount': shared_with_service_account,
     }
 
 
@@ -947,6 +1083,7 @@ def create_sheet(spreadsheet_id: str,
     Returns:
         Information about the newly created sheet
     """
+    _require_shared(ctx, spreadsheet_id, write=True)
     sheets_service = ctx.request_context.lifespan_context.sheets_service
     
     # Define the add sheet request
@@ -1052,6 +1189,7 @@ def share_spreadsheet(spreadsheet_id: str,
         A dictionary containing lists of 'successes' and 'failures'. 
         Each item in the lists includes the email address and the outcome.
     """
+    _require_shared(ctx, spreadsheet_id, write=True)
     drive_service = ctx.request_context.lifespan_context.drive_service
     successes = []
     failures = []
@@ -1372,6 +1510,8 @@ def find_in_spreadsheet(spreadsheet_id: str,
     results = []
 
     try:
+        _require_shared(ctx, spreadsheet_id)
+
         # Get spreadsheet metadata to find all sheets
         spreadsheet = sheets_service.spreadsheets().get(
             spreadsheetId=spreadsheet_id,
@@ -1488,6 +1628,7 @@ def batch_update(spreadsheet_id: str,
     Returns:
         Result of the batch update operation, including replies for each request
     """
+    _require_shared(ctx, spreadsheet_id, write=True)
     sheets_service = ctx.request_context.lifespan_context.sheets_service
     
     # Validate input
@@ -1581,6 +1722,7 @@ def add_chart(spreadsheet_id: str,
             title="Market Share by Product"
         )
     """
+    _require_shared(ctx, spreadsheet_id, write=True)
     sheets_service = ctx.request_context.lifespan_context.sheets_service
     
     # Validate chart type
