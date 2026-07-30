@@ -327,12 +327,18 @@ _Refer to the [ID Reference Guide](#-id-reference-guide) for more information ab
         *   `CREDENTIALS_PATH`: Path to the downloaded OAuth credentials JSON file (default: `credentials.json`).
         *   `TOKEN_PATH`: Path to store the user's refresh token after first login (default: `token.json`). Must be writable.
 
+
+**Rolling this out to multiple users (e.g. everyone at a company)?** The OAuth Client ID from step 2 is shared, not per-user - Google's own guidance for this "Desktop app" client type doesn't treat its secret as confidential (it can't be kept secret on an end-user device anyway), so distributing the same downloaded JSON to every machine (via your existing install/config process) is a fully supported pattern. Each person just does their own one-time browser consent, which produces their own local `token.json`. If your OAuth consent screen is set to **Internal** (available when everyone is in the same Google Workspace domain), it also skips Google's app-verification review entirely.
+
+If you'd rather not embed that file in your distribution process, see **Fetching the OAuth Client Config from Secret Manager** below for a runtime-retrieval alternative.
+
 ### Method C: Direct Credential Injection (Advanced) 🔒
 
 *   **Why?** Useful in environments like Docker, Kubernetes, or CI/CD where managing files is hard, but environment variables are easy/secure. Avoids file system access.
 *   **How?** Instead of providing a *path* to the credentials file, you provide the *content* of the file, encoded in Base64, directly in an environment variable.
+*   **Note:** `CREDENTIALS_CONFIG` currently only supports **Service Account** key JSON, not OAuth Client ID JSON. For injecting an OAuth Client ID without a local file, see **Fetching the OAuth Client Config from Secret Manager** below instead.
 *   **Steps:**
-    1.  **Get your credentials JSON file** (either Service Account key or OAuth Client ID file). Let's call it `your_credentials.json`.
+    1.  **Get your Service Account key JSON file.** Let's call it `your_credentials.json`.
     2.  **Generate the Base64 string:**
         *   **(Linux/macOS):** `base64 -w 0 your_credentials.json`
         *   **(Windows PowerShell):**
@@ -368,13 +374,26 @@ _Refer to the [ID Reference Guide](#-id-reference-guide) for more information ab
 
 **Note:** `GOOGLE_APPLICATION_CREDENTIALS` is Google's official standard environment variable, while `SERVICE_ACCOUNT_PATH` is specific to this MCP server. If you set `GOOGLE_APPLICATION_CREDENTIALS`, ADC will find it automatically.
 
+### Method E: Fetching the OAuth Client Config from Secret Manager 🔐
+
+*   **Why?** For rolling out Method B (OAuth) to multiple machines (e.g. everyone at a company) without embedding the OAuth Client ID JSON in your software distribution/config-management pipeline. Instead, the server fetches it from Google Secret Manager at startup.
+*   **How it works:** Requires the machine to already have *some* Application Default Credentials available (e.g. via `gcloud auth application-default login`, run once) with permission to read the secret. Using that bootstrap identity, the server fetches the OAuth Client ID JSON from Secret Manager and uses it to run the normal Method B browser-consent flow - each user still gets their own local `token.json` afterwards, same as Method B.
+*   **One-time setup (in your GCP project):**
+    1.  Enable the API: `gcloud services enable secretmanager.googleapis.com`
+    2.  Create the secret: `gcloud secrets create mcp-google-sheets-oauth-client --replication-policy=automatic`
+    3.  Upload your downloaded OAuth Client ID JSON as its first version: `gcloud secrets versions add mcp-google-sheets-oauth-client --data-file=credentials.json`
+    4.  Grant read access to whoever should be able to fetch it, e.g. for everyone in a Workspace domain: `gcloud secrets add-iam-policy-binding mcp-google-sheets-oauth-client --member="domain:yourcompany.com" --role="roles/secretmanager.secretAccessor"`
+*   **Set the Environment Variable:**
+    *   `CREDENTIALS_SECRET_NAME`: Full resource name of the secret version, e.g. `projects/my-project/secrets/mcp-google-sheets-oauth-client/versions/latest`. Takes priority over `CREDENTIALS_PATH` when set.
+*   **Caveat:** This doesn't eliminate the need for a bootstrap GCP login on each machine - it narrows what that login is used for (reading one secret, read-only) compared to using ADC directly for Sheets/Drive access.
+
 ### Authentication Priority & Summary
 
 The server checks for credentials in this order:
 
-1.  `CREDENTIALS_CONFIG` (Base64 content)
+1.  `CREDENTIALS_CONFIG` (Base64 content, Service Account only)
 2.  `SERVICE_ACCOUNT_PATH` (Path to Service Account JSON)
-3.  `CREDENTIALS_PATH` (Path to OAuth JSON) - triggers interactive flow if token is missing/expired
+3.  OAuth flow - using `CREDENTIALS_SECRET_NAME` (Secret Manager) if set, otherwise `CREDENTIALS_PATH` (local JSON file) - triggers interactive flow if token is missing/expired
 4.  **Application Default Credentials (ADC)** - automatic fallback
 
 **Environment Variable Summary:**
@@ -386,7 +405,8 @@ The server checks for credentials in this order:
 | `DRIVE_FOLDER_ID`                | Service Account             | ID of the Google Drive folder shared with the Service Account.   | -                  |
 | `CREDENTIALS_PATH`               | OAuth 2.0                   | Path to the OAuth 2.0 Client ID JSON file.                       | `credentials.json` |
 | `TOKEN_PATH`                     | OAuth 2.0                   | Path to store the generated OAuth token.                         | `token.json`       |
-| `CREDENTIALS_CONFIG`             | Service Account / OAuth 2.0 | Base64 encoded JSON string of credentials content.               | -                  |
+| `CREDENTIALS_CONFIG`             | Service Account             | Base64 encoded JSON string of Service Account key content.       | -                  |
+| `CREDENTIALS_SECRET_NAME`        | OAuth 2.0 (Secret Manager)  | Secret Manager resource name of the OAuth Client ID JSON. See Method E above. | -       |
 
 ---
 

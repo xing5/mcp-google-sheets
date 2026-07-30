@@ -34,6 +34,13 @@ CREDENTIALS_CONFIG = os.environ.get('CREDENTIALS_CONFIG')
 TOKEN_PATH = os.environ.get('TOKEN_PATH', 'token.json')
 CREDENTIALS_PATH = os.environ.get('CREDENTIALS_PATH', 'credentials.json')
 SERVICE_ACCOUNT_PATH = os.environ.get('SERVICE_ACCOUNT_PATH', 'service_account.json')
+# Full Secret Manager resource name of an OAuth Desktop-app client JSON, e.g.
+# "projects/my-project/secrets/mcp-google-sheets-oauth-client/versions/latest".
+# When set, takes priority over CREDENTIALS_PATH: the OAuth client config is fetched
+# from Secret Manager instead of read from a local file. Fetching it requires the
+# machine to already have some Application Default Credentials available (e.g. via
+# `gcloud auth application-default login`) with secretmanager.versions.access on it.
+CREDENTIALS_SECRET_NAME = os.environ.get('CREDENTIALS_SECRET_NAME')
 DRIVE_FOLDER_ID = os.environ.get('DRIVE_FOLDER_ID', '')  # Working directory in Google Drive
 
 
@@ -80,6 +87,22 @@ class SpreadsheetContext:
     drive_service: Any
     folder_id: Optional[str] = None
 
+
+
+def _fetch_oauth_client_config_from_secret_manager(secret_name: str) -> Dict[str, Any]:
+    """
+    Fetch an OAuth Desktop-app client config (the contents of a credentials.json file)
+    from Secret Manager, for use with InstalledAppFlow.from_client_config().
+
+    secret_name is a full resource name, e.g.
+    "projects/my-project/secrets/my-secret/versions/latest". Requires Application
+    Default Credentials with secretmanager.versions.access on that secret.
+    """
+    bootstrap_creds, _ = google.auth.default()
+    secretmanager_service = build('secretmanager', 'v1', credentials=bootstrap_creds, cache_discovery=False)
+    response = secretmanager_service.projects().secrets().versions().access(name=secret_name).execute()
+    payload_b64 = response['payload']['data']
+    return json.loads(base64.b64decode(payload_b64))
 
 @asynccontextmanager
 async def spreadsheet_lifespan(server: FastMCP) -> AsyncIterator[SpreadsheetContext]:
@@ -129,7 +152,12 @@ async def spreadsheet_lifespan(server: FastMCP) -> AsyncIterator[SpreadsheetCont
             # If refresh failed or creds don't exist, run OAuth flow
             if not creds:
                 try:
-                    flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_PATH, SCOPES)
+                    if CREDENTIALS_SECRET_NAME:
+                        logger.info("Fetching OAuth client config from Secret Manager: %s", CREDENTIALS_SECRET_NAME)
+                        client_config = _fetch_oauth_client_config_from_secret_manager(CREDENTIALS_SECRET_NAME)
+                        flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
+                    else:
+                        flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_PATH, SCOPES)
                     creds = flow.run_local_server(port=0)
 
                     # Save the credentials for the next run

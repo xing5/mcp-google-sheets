@@ -519,5 +519,55 @@ class ToolRequestConstructionTests(unittest.TestCase):
         )
 
 
+
+class SecretManagerCredentialFetchTests(unittest.TestCase):
+    def test_decodes_client_config_from_secret_payload(self):
+        import base64
+        import json as json_module
+
+        client_config = {"installed": {"client_id": "abc", "client_secret": "shh"}}
+        encoded_payload = base64.b64encode(json_module.dumps(client_config).encode()).decode()
+
+        fake_access_request = FakeRequest({"payload": {"data": encoded_payload}})
+
+        class FakeVersionsResource:
+            def access(self, name):
+                self.requested_name = name
+                return fake_access_request
+
+        class FakeSecretsResource:
+            def __init__(self):
+                self.versions_resource = FakeVersionsResource()
+
+            def versions(self):
+                return self.versions_resource
+
+        class FakeSecretManagerService:
+            def __init__(self):
+                self.secrets_resource = FakeSecretsResource()
+
+            def projects(self):
+                return self
+
+            def secrets(self):
+                return self.secrets_resource
+
+        fake_service = FakeSecretManagerService()
+
+        with patch.object(server.google.auth, "default", return_value=(SimpleNamespace(), "project")), \
+             patch.object(server, "build", return_value=fake_service) as mock_build:
+            result = server._fetch_oauth_client_config_from_secret_manager(
+                "projects/p/secrets/s/versions/latest"
+            )
+
+        self.assertEqual(result, client_config)
+        mock_build.assert_called_once()
+        self.assertEqual(mock_build.call_args[0][:2], ("secretmanager", "v1"))
+        self.assertEqual(
+            fake_service.secrets_resource.versions_resource.requested_name,
+            "projects/p/secrets/s/versions/latest",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
