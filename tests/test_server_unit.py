@@ -211,6 +211,14 @@ class A1HelperTests(unittest.TestCase):
             {"startColumnIndex": 0, "endColumnIndex": 3},
         )
 
+    def test_parse_empty_range_raises(self):
+        with self.assertRaises(ValueError):
+            server._parse_a1_notation("")
+
+    def test_parse_colon_only_range_raises(self):
+        with self.assertRaises(ValueError):
+            server._parse_a1_notation(":")
+
     def test_parse_invalid_a1_range_raises(self):
         with self.assertRaises(ValueError):
             server._parse_a1_notation("not a range")
@@ -517,6 +525,190 @@ class ToolRequestConstructionTests(unittest.TestCase):
                 "heightPixels": 200,
             },
         )
+
+
+    def test_format_cells_builds_repeat_cell_request(self):
+        sheets_service = RecordingSheetsService()
+
+        result = server.format_cells(
+            "spreadsheet-id",
+            "Sheet1",
+            "A1:C3",
+            background_color={"red": 1, "green": 0.647, "blue": 0},
+            text_format={"bold": True, "fontSize": 11},
+            horizontal_alignment="CENTER",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertNotIn("error", result)
+        _, call = sheets_service.spreadsheets_resource.calls[-1]
+        repeat_cell = call["body"]["requests"][0]["repeatCell"]
+        self.assertEqual(repeat_cell["range"]["sheetId"], 123)
+        self.assertEqual(repeat_cell["range"]["startRowIndex"], 0)
+        self.assertEqual(repeat_cell["range"]["endRowIndex"], 3)
+        self.assertEqual(repeat_cell["range"]["startColumnIndex"], 0)
+        self.assertEqual(repeat_cell["range"]["endColumnIndex"], 3)
+        fmt = repeat_cell["cell"]["userEnteredFormat"]
+        self.assertNotIn("backgroundColor", fmt)
+        self.assertEqual(fmt["backgroundColorStyle"], {"rgbColor": {"red": 1, "green": 0.647, "blue": 0}})
+        self.assertTrue(fmt["textFormat"]["bold"])
+        self.assertEqual(fmt["horizontalAlignment"], "CENTER")
+
+    def test_format_cells_returns_error_for_missing_sheet(self):
+        sheets_service = RecordingSheetsService()
+
+        result = server.format_cells(
+            "spreadsheet-id",
+            "NonExistent",
+            "A1:B2",
+            text_format={"bold": True},
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertIn("error", result)
+        self.assertIn("NonExistent", result["error"])
+
+    def test_format_cells_returns_error_when_no_format_options(self):
+        sheets_service = RecordingSheetsService()
+
+        result = server.format_cells(
+            "spreadsheet-id",
+            "Sheet1",
+            "A1:B2",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertIn("error", result)
+        self.assertIn("No format options", result["error"])
+
+    def test_format_cells_number_format(self):
+        sheets_service = RecordingSheetsService()
+
+        result = server.format_cells(
+            "spreadsheet-id",
+            "Sheet1",
+            "E2:E10",
+            number_format={"type": "CURRENCY", "pattern": "$#,##0.00"},
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertNotIn("error", result)
+        _, call = sheets_service.spreadsheets_resource.calls[-1]
+        repeat_cell = call["body"]["requests"][0]["repeatCell"]
+        fmt = repeat_cell["cell"]["userEnteredFormat"]
+        self.assertEqual(fmt["numberFormat"], {"type": "CURRENCY", "pattern": "$#,##0.00"})
+
+    def test_format_cells_vertical_alignment_and_wrap(self):
+        sheets_service = RecordingSheetsService()
+
+        result = server.format_cells(
+            "spreadsheet-id",
+            "Sheet1",
+            "A1:B2",
+            vertical_alignment="MIDDLE",
+            wrap_strategy="WRAP",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertNotIn("error", result)
+        _, call = sheets_service.spreadsheets_resource.calls[-1]
+        repeat_cell = call["body"]["requests"][0]["repeatCell"]
+        fmt = repeat_cell["cell"]["userEnteredFormat"]
+        self.assertEqual(fmt["verticalAlignment"], "MIDDLE")
+        self.assertEqual(fmt["wrapStrategy"], "WRAP")
+        self.assertIn("userEnteredFormat.verticalAlignment", repeat_cell["fields"])
+        self.assertIn("userEnteredFormat.wrapStrategy", repeat_cell["fields"])
+
+    def test_format_cells_api_error_returns_error_dict(self):
+        sheets_service = RecordingSheetsService()
+        sheets_service.spreadsheets_resource.batch_update_result = Exception("Permission denied")
+
+        result = server.format_cells(
+            "spreadsheet-id",
+            "Sheet1",
+            "A1",
+            text_format={"bold": True},
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertIn("error", result)
+        self.assertIn("Permission denied", result["error"])
+
+    def test_format_cells_normalizes_alignment_case(self):
+        sheets_service = RecordingSheetsService()
+
+        result = server.format_cells(
+            "spreadsheet-id",
+            "Sheet1",
+            "A1",
+            horizontal_alignment="center",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertNotIn("error", result)
+        _, call = sheets_service.spreadsheets_resource.calls[-1]
+        fmt = call["body"]["requests"][0]["repeatCell"]["cell"]["userEnteredFormat"]
+        self.assertEqual(fmt["horizontalAlignment"], "CENTER")
+
+    def test_format_cells_single_cell(self):
+        sheets_service = RecordingSheetsService()
+
+        result = server.format_cells(
+            "spreadsheet-id",
+            "Sheet1",
+            "E17",
+            text_format={"italic": True},
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertNotIn("error", result)
+        _, call = sheets_service.spreadsheets_resource.calls[-1]
+        repeat_cell = call["body"]["requests"][0]["repeatCell"]
+        self.assertEqual(repeat_cell["range"]["startRowIndex"], 16)
+        self.assertEqual(repeat_cell["range"]["endRowIndex"], 17)
+        self.assertEqual(repeat_cell["range"]["startColumnIndex"], 4)
+        self.assertEqual(repeat_cell["range"]["endColumnIndex"], 5)
+
+    def test_format_cells_text_format_uses_granular_field_masks(self):
+        """text_format field mask lists each sub-field so unmentioned
+        properties (font, size, color) are preserved on the cell."""
+        sheets_service = RecordingSheetsService()
+
+        result = server.format_cells(
+            "spreadsheet-id",
+            "Sheet1",
+            "A1:A5",
+            text_format={"bold": True, "fontSize": 11},
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertNotIn("error", result)
+        _, call = sheets_service.spreadsheets_resource.calls[-1]
+        fields = call["body"]["requests"][0]["repeatCell"]["fields"]
+        self.assertIn("userEnteredFormat.textFormat.bold", fields)
+        self.assertIn("userEnteredFormat.textFormat.fontSize", fields)
+        self.assertNotIn("userEnteredFormat.textFormat,", fields)
+        # The coarse mask should not appear
+        self.assertNotEqual(fields, "userEnteredFormat.textFormat")
+
+    def test_format_cells_strikethrough_only_preserves_other_formatting(self):
+        """Passing only strikethrough should not clobber font/size/color."""
+        sheets_service = RecordingSheetsService()
+
+        result = server.format_cells(
+            "spreadsheet-id",
+            "Sheet1",
+            "A1:H1",
+            text_format={"strikethrough": True},
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertNotIn("error", result)
+        _, call = sheets_service.spreadsheets_resource.calls[-1]
+        fields = call["body"]["requests"][0]["repeatCell"]["fields"]
+        self.assertEqual(fields, "userEnteredFormat.textFormat.strikethrough")
+        fmt = call["body"]["requests"][0]["repeatCell"]["cell"]["userEnteredFormat"]
+        self.assertTrue(fmt["textFormat"]["strikethrough"])
 
 
 if __name__ == "__main__":

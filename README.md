@@ -90,7 +90,8 @@ You're ready! Start issuing commands via your MCP client.
 ## ✨ Key Features
 
 *   **Seamless Integration:** Connects directly to Google Drive & Google Sheets APIs.
-*   **Comprehensive Tools:** Offers a wide range of operations (CRUD, listing, batching, sharing, formatting, etc.).
+*   **Comprehensive Tools:** Offers a wide range of operations (CRUD, listing, batching, sharing, cell formatting, etc.).
+*   **Cell Formatting:** Apply number formats, colors, text styles, and alignment to spreadsheet cells.
 *   **Flexible Authentication:** Supports **Service Accounts (recommended)**, OAuth 2.0, and direct credential injection via environment variables.
 *   **Easy Deployment:** Run instantly with `uvx` (zero-install feel) or clone for development using `uv`.
 *   **AI-Ready:** Designed for use with MCP-compatible clients, enabling natural language spreadsheet interaction.
@@ -162,6 +163,7 @@ When filtering, use these exact tool names (comma-separated, no spaces):
 - `create_sheet`
 - `create_spreadsheet`
 - `find_in_spreadsheet`
+- `format_cells`
 - `get_multiple_sheet_data`
 - `get_multiple_spreadsheet_summary`
 - `get_sheet_data`
@@ -240,6 +242,17 @@ _Refer to the [ID Reference Guide](#-id-reference-guide) for more information ab
     *   `recipients` (array of objects): `[{"email_address": "user@example.com", "role": "writer"}, ...]`. Roles: `reader`, `commenter`, `writer`.
     *   `send_notification` (optional boolean, default `True`): Send email notifications to recipients.
     *   _Returns:_ Dictionary with `successes` and `failures` lists.
+*   **`format_cells`**: Apply formatting to cells in a Google Spreadsheet.
+    *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
+    *   `sheet` (string): Name of the sheet/tab (e.g., "Sheet1").
+    *   `range` (string): Cell range in A1 notation (e.g., `'A1:C10'` or `'E17'`).
+    *   `number_format` (optional object): Number format with `type` and `pattern` keys. Example: `{'type': 'CURRENCY', 'pattern': '$#,##0.00'}`. Types: `NUMBER`, `CURRENCY`, `PERCENT`, `DATE`, `TIME`, `DATE_TIME`, `SCIENTIFIC`, `TEXT`.
+    *   `background_color` (optional object): Background color with `red`, `green`, `blue` keys (0-1 range). Example: `{'red': 1, 'green': 0.647, 'blue': 0}` for orange.
+    *   `text_format` (optional object): Text format with keys like `bold`, `italic`, `fontSize`, `foregroundColor` (object with `red`, `green`, `blue` keys, 0-1 range). Example: `{'bold': true, 'fontSize': 11, 'foregroundColor': {'red': 0, 'green': 0, 'blue': 0}}`.
+    *   `horizontal_alignment` (optional string): One of: `LEFT`, `CENTER`, `RIGHT`.
+    *   `vertical_alignment` (optional string): One of: `TOP`, `MIDDLE`, `BOTTOM`.
+    *   `wrap_strategy` (optional string): Text wrapping. One of: `OVERFLOW_CELL`, `CLIP`, `WRAP`.
+    *   _Returns:_ Format operation result object.
 *   **`add_columns`**: Adds (inserts) empty columns to a sheet/tab at a specified index.
     *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
     *   `sheet` (string): Name of the sheet/tab (e.g., "Sheet1").
@@ -607,6 +620,9 @@ Once connected, try prompts like:
 *   "Create a column chart in my 'Sales Report' spreadsheet showing monthly revenue from data in range A1:B13."
 *   "Add a pie chart to the 'Market Analysis' sheet with data from A1:B5 titled 'Market Share by Product'."
 *   "In spreadsheet `abc123`, create a line chart on Sheet1 from range A1:C10 with title 'Growth Trends' and labels 'Month' and 'Revenue'."
+*   "Format cells A1:E1 in Sheet1 with orange background, bold black text."
+*   "Apply currency formatting to cells E2:E10 in the 'Sales' sheet."
+*   "Center align the text in cells B1:D1 and make them bold."
 
 ---
 
@@ -644,6 +660,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🙏 Credits
 
-*   Built with [FastMCP](https://github.com/cognitiveapis/fastmcp).
+*   Built with the [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk).
 *   Inspired by [kazz187/mcp-google-spreadsheet](https://github.com/kazz187/mcp-google-spreadsheet).
 *   Uses Google API Python Client libraries.

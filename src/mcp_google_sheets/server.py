@@ -1,21 +1,23 @@
 #!/usr/bin/env python
 """
 Google Spreadsheet MCP Server
-A Model Context Protocol (MCP) server built with FastMCP for interacting with Google Sheets.
+A Model Context Protocol (MCP) server built with MCPServer for interacting with Google Sheets.
 """
 
 import base64
+import json
 import logging
 import os
+import re
 import sys
-from typing import List, Dict, Any, Optional, Union
-import json
+from typing import List, Dict, Any, Literal, Optional, Union
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 
 # MCP imports
-from mcp.server.fastmcp import FastMCP, Context
+from mcp.server import MCPServer
+from mcp.server.mcpserver.context import Context
 from mcp.types import ToolAnnotations
 
 # Google API imports
@@ -82,7 +84,7 @@ class SpreadsheetContext:
 
 
 @asynccontextmanager
-async def spreadsheet_lifespan(server: FastMCP) -> AsyncIterator[SpreadsheetContext]:
+async def spreadsheet_lifespan(server: MCPServer) -> AsyncIterator[SpreadsheetContext]:
     """Manage Google Spreadsheet API connection lifecycle"""
     # Authenticate and build the service
     creds = None
@@ -179,12 +181,10 @@ try:
 except ValueError:
     _resolved_port = 8000
 
-# Initialize the MCP server with explicit host/port to ensure binding as configured
-mcp = FastMCP("Google Spreadsheet",
-              dependencies=["google-auth", "google-auth-oauthlib", "google-api-python-client"],
-              lifespan=spreadsheet_lifespan,
-              host=_resolved_host,
-              port=_resolved_port)
+# Initialize the MCP server
+mcp = MCPServer("Google Spreadsheet",
+                dependencies=["google-auth", "google-auth-oauthlib", "google-api-python-client"],
+                lifespan=spreadsheet_lifespan)
 
 
 def tool(annotations: Optional[ToolAnnotations] = None):
@@ -1253,16 +1253,20 @@ def _parse_a1_notation(range_str: str) -> Dict[str, int]:
         May include: startRowIndex, endRowIndex, startColumnIndex, endColumnIndex.
         Not all keys are present for all range formats (e.g., 'A:B' has no row indices).
     """
-    import re
-    
+    if not range_str or not range_str.strip():
+        raise ValueError("Range cannot be empty")
+
     # Match patterns like A1, A1:B2, A:B, 1:10
-    match = re.match(r'^([A-Z]+)?(\d+)?(?::([A-Z]+)?(\d+)?)?$', range_str.upper())
+    match = re.match(r'^([A-Z]+)?(\d+)?(?::([A-Z]+)?(\d+)?)?$', range_str.strip().upper())
     
     if not match:
         raise ValueError(f"Invalid A1 notation: {range_str}")
     
     start_col, start_row, end_col, end_row = match.groups()
-    
+
+    if not any([start_col, start_row, end_col, end_row]):
+        raise ValueError(f"Invalid A1 notation: {range_str}")
+
     result = {}
     
     # Start column
@@ -1727,6 +1731,124 @@ def add_chart(spreadsheet_id: str,
         }
 
 
+@tool(
+    annotations=ToolAnnotations(
+        title="Format Cells",
+        destructiveHint=True,
+        idempotentHint=True,
+    ),
+)
+def format_cells(spreadsheet_id: str,
+                sheet: str,
+                range: str,
+                number_format: Optional[Dict[str, str]] = None,
+                background_color: Optional[Dict[str, float]] = None,
+                text_format: Optional[Dict[str, Any]] = None,
+                horizontal_alignment: Optional[Literal["LEFT", "CENTER", "RIGHT"]] = None,
+                vertical_alignment: Optional[Literal["TOP", "MIDDLE", "BOTTOM"]] = None,
+                wrap_strategy: Optional[Literal["OVERFLOW_CELL", "CLIP", "WRAP"]] = None,
+                ctx: Context = None) -> Dict[str, Any]:
+    """
+    Apply formatting to cells in a Google Spreadsheet.
+
+    Args:
+        spreadsheet_id: The ID of the spreadsheet (found in the URL)
+        sheet: The name of the sheet
+        range: Cell range in A1 notation (e.g., 'A1:C10' or 'E17')
+        number_format: Optional number format with 'type' and 'pattern' keys.
+                      Example: {'type': 'CURRENCY', 'pattern': '$#,##0.00'}
+                      Types: 'NUMBER', 'CURRENCY', 'PERCENT', 'DATE', 'TIME', 'DATE_TIME', 'SCIENTIFIC', 'TEXT'
+        background_color: Optional background color with 'red', 'green', 'blue' keys (0-1 range).
+                         Example: {'red': 1, 'green': 0.647, 'blue': 0} for orange
+        text_format: Optional text format with keys like 'bold', 'italic', 'fontSize',
+                    'fontFamily', 'strikethrough', 'underline',
+                    'foregroundColor' (object with 'red', 'green', 'blue' keys, 0-1 range).
+                    Only the keys you specify are changed; existing text formatting on the
+                    cell (font, size, color, etc.) is preserved for any key you omit.
+                    Example: {'bold': True, 'fontSize': 11, 'foregroundColor': {'red': 0, 'green': 0, 'blue': 0}}
+                    Example (strikethrough only, preserves existing font): {'strikethrough': True}
+        horizontal_alignment: Optional horizontal alignment. One of: 'LEFT', 'CENTER', 'RIGHT'
+        vertical_alignment: Optional vertical alignment. One of: 'TOP', 'MIDDLE', 'BOTTOM'
+        wrap_strategy: Optional text wrapping. One of: 'OVERFLOW_CELL', 'CLIP', 'WRAP'
+
+    Returns:
+        Dict with 'success' (bool) and 'message' (str) on success, or 'error' (str) on failure
+    """
+    cell_format = {}
+    fields = []
+
+    if number_format:
+        cell_format['numberFormat'] = number_format
+        fields.append('userEnteredFormat.numberFormat')
+
+    if background_color:
+        cell_format['backgroundColorStyle'] = {'rgbColor': background_color}
+        fields.append('userEnteredFormat.backgroundColorStyle')
+
+    if text_format:
+        cell_format['textFormat'] = text_format
+        # Use granular field masks so only the specified sub-fields are
+        # overwritten; unmentioned properties (e.g. fontFamily, fontSize)
+        # are preserved on the cell.
+        for key in text_format:
+            fields.append(f'userEnteredFormat.textFormat.{key}')
+
+    if horizontal_alignment:
+        cell_format['horizontalAlignment'] = horizontal_alignment.upper()
+        fields.append('userEnteredFormat.horizontalAlignment')
+
+    if vertical_alignment:
+        cell_format['verticalAlignment'] = vertical_alignment.upper()
+        fields.append('userEnteredFormat.verticalAlignment')
+
+    if wrap_strategy:
+        cell_format['wrapStrategy'] = wrap_strategy.upper()
+        fields.append('userEnteredFormat.wrapStrategy')
+
+    if not fields:
+        return {"error": "No format options provided"}
+
+    try:
+        range_indices = _parse_a1_notation(range)
+    except ValueError as e:
+        return {"error": str(e)}
+
+    sheets_service = ctx.request_context.lifespan_context.sheets_service
+
+    sheet_id = _get_sheet_id(sheets_service, spreadsheet_id, sheet)
+    if sheet_id is None:
+        return {"error": f"Sheet '{sheet}' not found"}
+
+    grid_range = {"sheetId": sheet_id}
+    grid_range.update(range_indices)
+
+    request_body = {
+        "requests": [
+            {
+                "repeatCell": {
+                    "range": grid_range,
+                    "cell": {
+                        "userEnteredFormat": cell_format
+                    },
+                    "fields": ','.join(fields)
+                }
+            }
+        ]
+    }
+
+    try:
+        sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body=request_body
+        ).execute()
+        return {
+            "success": True,
+            "message": f"Formatted range '{range}' on sheet '{sheet}'"
+        }
+    except Exception as e:
+        return {"error": f"Failed to format cells: {str(e)}"}
+
+
 def main():
     _configure_logging()
 
@@ -1743,4 +1865,9 @@ def main():
             transport = sys.argv[i + 1]
             break
 
-    mcp.run(transport=transport)
+    kwargs = {}
+    if transport == "sse":
+        kwargs["host"] = _resolved_host
+        kwargs["port"] = _resolved_port
+
+    mcp.run(transport=transport, **kwargs)
