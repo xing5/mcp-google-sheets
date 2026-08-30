@@ -326,6 +326,10 @@ _Refer to the [ID Reference Guide](#-id-reference-guide) for more information ab
     3.  **Set Environment Variables:**
         *   `CREDENTIALS_PATH`: Path to the downloaded OAuth credentials JSON file (default: `credentials.json`).
         *   `TOKEN_PATH`: Path to store the user's refresh token after first login (default: `token.json`). Must be writable.
+        *   `OAUTH_AUTH_URL_FILE`: Optional path where the server writes the exact authorization URL while waiting for the OAuth callback. The server removes the file after successful authorization.
+        *   `OAUTH_OPEN_BROWSER`: Whether the server opens the authorization URL in the default browser. Set it to `false`, `0`, `no`, or `off` for a headless client. The default is `true`.
+
+        Authentication prompts are written to `stderr` so they do not interfere with the stdio MCP protocol. For a headless client, set `OAUTH_AUTH_URL_FILE` and `OAUTH_OPEN_BROWSER=false`, then open the URL from the generated file on the same computer.
 
 ### Method C: Direct Credential Injection (Advanced) 🔒
 
@@ -386,6 +390,8 @@ The server checks for credentials in this order:
 | `DRIVE_FOLDER_ID`                | Service Account             | ID of the Google Drive folder shared with the Service Account.   | -                  |
 | `CREDENTIALS_PATH`               | OAuth 2.0                   | Path to the OAuth 2.0 Client ID JSON file.                       | `credentials.json` |
 | `TOKEN_PATH`                     | OAuth 2.0                   | Path to store the generated OAuth token.                         | `token.json`       |
+| `OAUTH_AUTH_URL_FILE`            | OAuth 2.0                   | Optional temporary file for the canonical authorization URL.    | -                  |
+| `OAUTH_OPEN_BROWSER`             | OAuth 2.0                   | Whether to open the authorization URL in the default browser.   | `true`             |
 | `CREDENTIALS_CONFIG`             | Service Account / OAuth 2.0 | Base64 encoded JSON string of credentials content.               | -                  |
 
 ---

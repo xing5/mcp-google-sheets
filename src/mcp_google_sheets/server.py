@@ -11,8 +11,9 @@ import sys
 from typing import List, Dict, Any, Optional, Union
 import json
 from dataclasses import dataclass
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, redirect_stdout
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 # MCP imports
 from mcp.server.fastmcp import FastMCP, Context
@@ -35,6 +36,56 @@ TOKEN_PATH = os.environ.get('TOKEN_PATH', 'token.json')
 CREDENTIALS_PATH = os.environ.get('CREDENTIALS_PATH', 'credentials.json')
 SERVICE_ACCOUNT_PATH = os.environ.get('SERVICE_ACCOUNT_PATH', 'service_account.json')
 DRIVE_FOLDER_ID = os.environ.get('DRIVE_FOLDER_ID', '')  # Working directory in Google Drive
+
+
+def _oauth_open_browser() -> bool:
+    """Return whether the interactive OAuth flow should open a browser."""
+    value = os.environ.get("OAUTH_OPEN_BROWSER")
+    if value is None:
+        return True
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+class _OAuthAuthorizationPrompt:
+    """Persist the canonical OAuth URL when a fallback file is configured."""
+
+    def __init__(self, output_path: Optional[str]):
+        self.output_path = Path(output_path).expanduser() if output_path else None
+
+    def format(self, *, url: str) -> str:
+        if self.output_path is None:
+            return f"Open this URL to authorize the application: {url}"
+
+        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        self.output_path.write_text(f"{url}\n", encoding="utf-8")
+        try:
+            self.output_path.chmod(0o600)
+        except OSError as error:
+            logger.warning(
+                "Could not restrict OAuth authorization URL file permissions: %s",
+                error,
+            )
+        return f"Open the OAuth authorization URL stored at: {self.output_path}"
+
+    def cleanup(self) -> None:
+        if self.output_path is not None:
+            self.output_path.unlink(missing_ok=True)
+
+
+def _run_oauth_flow():
+    """Run interactive OAuth without writing diagnostic text to MCP stdout."""
+    flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_PATH, SCOPES)
+    prompt = _OAuthAuthorizationPrompt(os.environ.get("OAUTH_AUTH_URL_FILE"))
+
+    with redirect_stdout(sys.stderr):
+        credentials = flow.run_local_server(
+            port=0,
+            open_browser=_oauth_open_browser(),
+            authorization_prompt_message=prompt,
+        )
+
+    prompt.cleanup()
+    return credentials
 
 
 def _configure_logging() -> None:
@@ -129,8 +180,7 @@ async def spreadsheet_lifespan(server: FastMCP) -> AsyncIterator[SpreadsheetCont
             # If refresh failed or creds don't exist, run OAuth flow
             if not creds:
                 try:
-                    flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_PATH, SCOPES)
-                    creds = flow.run_local_server(port=0)
+                    creds = _run_oauth_flow()
 
                     # Save the credentials for the next run
                     with open(TOKEN_PATH, 'w') as token:

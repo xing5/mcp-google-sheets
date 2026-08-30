@@ -1,9 +1,11 @@
 import ast
 import os
 import sys
+import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -185,6 +187,68 @@ class StdioSafetyTests(unittest.TestCase):
 
         configure_logging.assert_called_once_with()
         run.assert_called_once_with(transport="stdio")
+
+
+class OAuthAuthorizationTests(unittest.TestCase):
+    def test_prompt_writes_canonical_url_to_configured_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "oauth-url.txt"
+            prompt = server._OAuthAuthorizationPrompt(str(output_path))
+
+            message = prompt.format(url="https://accounts.example.test/oauth?state=abc")
+
+            self.assertEqual(
+                output_path.read_text(encoding="utf-8"),
+                "https://accounts.example.test/oauth?state=abc\n",
+            )
+            self.assertIn(str(output_path), message)
+            self.assertNotIn("state=abc", message)
+
+    def test_prompt_returns_url_when_no_file_is_configured(self):
+        prompt = server._OAuthAuthorizationPrompt(None)
+
+        message = prompt.format(url="https://accounts.example.test/oauth")
+
+        self.assertIn("https://accounts.example.test/oauth", message)
+
+    def test_oauth_flow_keeps_stdout_clean_and_removes_url_file(self):
+        credentials = object()
+
+        class FakeFlow:
+            def __init__(self):
+                self.options = None
+
+            def run_local_server(self, **options):
+                self.options = options
+                message = options["authorization_prompt_message"].format(
+                    url="https://accounts.example.test/oauth?state=abc"
+                )
+                print(message)
+                return credentials
+
+        fake_flow = FakeFlow()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "oauth-url.txt"
+            environment = {
+                "OAUTH_AUTH_URL_FILE": str(output_path),
+                "OAUTH_OPEN_BROWSER": "false",
+            }
+            with patch.dict(os.environ, environment, clear=False):
+                with patch.object(
+                    server.InstalledAppFlow,
+                    "from_client_secrets_file",
+                    return_value=fake_flow,
+                ):
+                    with redirect_stdout(StringIO()) as stdout:
+                        with redirect_stderr(StringIO()) as stderr:
+                            result = server._run_oauth_flow()
+
+            self.assertIs(result, credentials)
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertIn(str(output_path), stderr.getvalue())
+            self.assertFalse(output_path.exists())
+            self.assertEqual(fake_flow.options["port"], 0)
+            self.assertFalse(fake_flow.options["open_browser"])
 
 
 class A1HelperTests(unittest.TestCase):
