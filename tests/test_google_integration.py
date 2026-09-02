@@ -133,9 +133,14 @@ class GoogleSheetsIntegrationTests(unittest.TestCase):
         primary_id = self.create_test_spreadsheet(primary_title)
         copy_target_id = self.create_test_spreadsheet(copy_target_title)
 
+        # Google names the first sheet in the language of the account that owns it
+        # ("Sheet1" in English, "Página1" in Portuguese, and so on), so the name
+        # has to be discovered rather than assumed.
+        sheet_name = server.list_sheets(primary_id, ctx=self.ctx)[0]
+
         update_result = server.update_cells(
             primary_id,
-            "Sheet1",
+            sheet_name,
             "A1:D3",
             [
                 ["name", "score", "team", "double"],
@@ -146,16 +151,16 @@ class GoogleSheetsIntegrationTests(unittest.TestCase):
         )
         self.assertGreaterEqual(update_result.get("updatedCells", 0), 12)
 
-        data = server.get_sheet_data(primary_id, "Sheet1", "A1:D3", ctx=self.ctx)
+        data = server.get_sheet_data(primary_id, sheet_name, "A1:D3", ctx=self.ctx)
         self.assertEqual(data["valueRanges"][0]["values"][1][0], "Ada")
         self.assertEqual(data["valueRanges"][0]["values"][1][1], "42")
 
-        formulas = server.get_sheet_formulas(primary_id, "Sheet1", "D2:D3", ctx=self.ctx)
+        formulas = server.get_sheet_formulas(primary_id, sheet_name, "D2:D3", ctx=self.ctx)
         self.assertEqual(formulas, [["=B2*2"], ["=B3*2"]])
 
         batch_cells = server.batch_update_cells(
             primary_id,
-            "Sheet1",
+            sheet_name,
             {
                 "E1:E2": [["status"], ["ready"]],
                 "F1:F2": [["owner"], ["integration"]],
@@ -164,14 +169,14 @@ class GoogleSheetsIntegrationTests(unittest.TestCase):
         )
         self.assertGreaterEqual(batch_cells.get("totalUpdatedCells", 0), 4)
 
-        add_rows = server.add_rows(primary_id, "Sheet1", count=1, start_row=10, ctx=self.ctx)
+        add_rows = server.add_rows(primary_id, sheet_name, count=1, start_row=10, ctx=self.ctx)
         self.assertIn("replies", add_rows)
 
-        add_columns = server.add_columns(primary_id, "Sheet1", count=1, start_column=10, ctx=self.ctx)
+        add_columns = server.add_columns(primary_id, sheet_name, count=1, start_column=10, ctx=self.ctx)
         self.assertIn("replies", add_columns)
 
         initial_sheets = server.list_sheets(primary_id, ctx=self.ctx)
-        self.assertIn("Sheet1", initial_sheets)
+        self.assertIn(sheet_name, initial_sheets)
 
         created_sheet = server.create_sheet(primary_id, "CreatedTab", ctx=self.ctx)
         self.assertEqual(created_sheet["title"], "CreatedTab")
@@ -180,7 +185,7 @@ class GoogleSheetsIntegrationTests(unittest.TestCase):
         self.assertIn("replies", rename_result)
         self.assertIn("RenamedTab", server.list_sheets(primary_id, ctx=self.ctx))
 
-        sheet1_id = server._get_sheet_id(self.sheets_service, primary_id, "Sheet1")
+        sheet1_id = server._get_sheet_id(self.sheets_service, primary_id, sheet_name)
         self.assertIsNotNone(sheet1_id)
 
         batch_result = server.batch_update(
@@ -206,7 +211,7 @@ class GoogleSheetsIntegrationTests(unittest.TestCase):
 
         chart_result = server.add_chart(
             primary_id,
-            "Sheet1",
+            sheet_name,
             "COLUMN",
             "A1:B3",
             title="Integration Chart",
@@ -219,7 +224,7 @@ class GoogleSheetsIntegrationTests(unittest.TestCase):
 
         copy_result = server.copy_sheet(
             primary_id,
-            "Sheet1",
+            sheet_name,
             copy_target_id,
             "CopiedSheet",
             ctx=self.ctx,
@@ -229,7 +234,7 @@ class GoogleSheetsIntegrationTests(unittest.TestCase):
 
         multi_data = server.get_multiple_sheet_data(
             [
-                {"spreadsheet_id": primary_id, "sheet": "Sheet1", "range": "A1:B3"},
+                {"spreadsheet_id": primary_id, "sheet": sheet_name, "range": "A1:B3"},
                 {"spreadsheet_id": copy_target_id, "sheet": "CopiedSheet", "range": "A1:B3"},
             ],
             ctx=self.ctx,
@@ -259,7 +264,7 @@ class GoogleSheetsIntegrationTests(unittest.TestCase):
 
         found_cells = server.find_in_spreadsheet(primary_id, "Ada", ctx=self.ctx)
         self.assertTrue(
-            any(cell["sheet"] == "Sheet1" and cell["cell"] == "A2" for cell in found_cells),
+            any(cell["sheet"] == sheet_name and cell["cell"] == "A2" for cell in found_cells),
             found_cells,
         )
 

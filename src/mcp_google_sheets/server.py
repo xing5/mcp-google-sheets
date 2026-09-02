@@ -234,7 +234,7 @@ def get_sheet_data(spreadsheet_id: str,
     
     Args:
         spreadsheet_id: The ID of the spreadsheet (found in the URL)
-        sheet: The name of the sheet
+        sheet: The name of the sheet, as returned by list_sheets
         range: Optional cell range in A1 notation (e.g., 'A1:C10'). If not provided, gets all data.
         include_grid_data: If True, includes cell formatting and other metadata in the response.
             Note: Setting this to True will significantly increase the response size and token usage
@@ -292,7 +292,7 @@ def get_sheet_formulas(spreadsheet_id: str,
     
     Args:
         spreadsheet_id: The ID of the spreadsheet (found in the URL)
-        sheet: The name of the sheet
+        sheet: The name of the sheet, as returned by list_sheets
         range: Optional cell range in A1 notation (e.g., 'A1:C10'). If not provided, gets all formulas from the sheet.
     
     Returns:
@@ -333,7 +333,7 @@ def update_cells(spreadsheet_id: str,
     
     Args:
         spreadsheet_id: The ID of the spreadsheet (found in the URL)
-        sheet: The name of the sheet
+        sheet: The name of the sheet, as returned by list_sheets
         range: Cell range in A1 notation (e.g., 'A1:C10')
         data: 2D array of values to update
     
@@ -376,7 +376,7 @@ def batch_update_cells(spreadsheet_id: str,
     
     Args:
         spreadsheet_id: The ID of the spreadsheet (found in the URL)
-        sheet: The name of the sheet
+        sheet: The name of the sheet, as returned by list_sheets
         ranges: Dictionary mapping range strings to 2D arrays of values
                e.g., {'A1:B2': [[1, 2], [3, 4]], 'D1:E2': [['a', 'b'], ['c', 'd']]}
     
@@ -424,7 +424,7 @@ def add_rows(spreadsheet_id: str,
     
     Args:
         spreadsheet_id: The ID of the spreadsheet (found in the URL)
-        sheet: The name of the sheet
+        sheet: The name of the sheet, as returned by list_sheets
         count: Number of rows to add
         start_row: 0-based row index to start adding. If not provided, adds at the beginning.
     
@@ -487,7 +487,7 @@ def add_columns(spreadsheet_id: str,
     
     Args:
         spreadsheet_id: The ID of the spreadsheet (found in the URL)
-        sheet: The name of the sheet
+        sheet: The name of the sheet, as returned by list_sheets
         count: Number of columns to add
         start_column: 0-based column index to start adding. If not provided, adds at the beginning.
     
@@ -548,7 +548,9 @@ def list_sheets(spreadsheet_id: str, ctx: Context = None) -> List[str]:
         spreadsheet_id: The ID of the spreadsheet (found in the URL)
     
     Returns:
-        List of sheet names
+        List of sheet names. Google names the first sheet in the language of the
+        account that owns the spreadsheet ("Sheet1" in English, "Página1" in
+        Portuguese, and so on), so read the name from here instead of assuming it.
     """
     sheets_service = ctx.request_context.lifespan_context.sheets_service
     
@@ -1537,7 +1539,7 @@ def add_chart(spreadsheet_id: str,
     
     Args:
         spreadsheet_id: The ID of the spreadsheet (found in the URL)
-        sheet: The name of the sheet containing the data
+        sheet: The name of the sheet containing the data, as returned by list_sheets
         chart_type: Type of chart to create. Supported types:
                    - COLUMN: Vertical bar chart
                    - BAR: Horizontal bar chart

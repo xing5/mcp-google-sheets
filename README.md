@@ -195,35 +195,35 @@ _Refer to the [ID Reference Guide](#-id-reference-guide) for more information ab
     *   _Returns:_ Object with spreadsheet info, including `spreadsheetId`, `title`, and `folder`.
 *   **`get_sheet_data`**: Reads data from a range in a sheet/tab.
     *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
-    *   `sheet` (string): Name of the sheet/tab (e.g., "Sheet1").
+    *   `sheet` (string): Name of the sheet/tab. Sheet names follow the language of the account that owns the spreadsheet, so get it from `list_sheets` rather than assuming it.
     *   `range` (optional string): A1 notation (e.g., `'A1:C10'`, `'Sheet1!B2:D'`). If omitted, reads the whole sheet/tab specified by `sheet`.
     *   `include_grid_data` (optional boolean, default `False`): If `True`, returns full grid data including formatting and metadata (much larger). If `False`, returns values only (more efficient).
     *   _Returns:_ If `include_grid_data=True`, full grid data with metadata ([`get` response](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/get#response-body)). If `False`, a values result object from the Values API ([`values.get` response](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values/get#response-body)).
 *   **`get_sheet_formulas`**: Reads formulas from a range in a sheet/tab.
     *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
-    *   `sheet` (string): Name of the sheet/tab (e.g., "Sheet1").
+    *   `sheet` (string): Name of the sheet/tab. Sheet names follow the language of the account that owns the spreadsheet, so get it from `list_sheets` rather than assuming it.
     *   `range` (optional string): A1 notation (e.g., `'A1:C10'`, `'Sheet1!B2:D'`). If omitted, reads all formulas in the sheet/tab specified by `sheet`.
     *   _Returns:_ 2D array of cell formulas (array of arrays) ([`values.get` response](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values/get#response-body)).
 *   **`update_cells`**: Writes data to a specific range. Overwrites existing data.
     *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
-    *   `sheet` (string): Name of the sheet/tab (e.g., "Sheet1").
+    *   `sheet` (string): Name of the sheet/tab. Sheet names follow the language of the account that owns the spreadsheet, so get it from `list_sheets` rather than assuming it.
     *   `range` (string): A1 notation range to write to (e.g., 'A1:C3').
     *   `data` (array of arrays): 2D array of values to write. Example: `[[1, 2, 3], ["a", "b", "c"]]`.
     *   _Returns:_ Update result object ([`values.update` response](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values/update#response-body)).
 *   **`batch_update_cells`**: Updates multiple ranges in one API call.
     *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
-    *   `sheet` (string): Name of the sheet/tab (e.g., "Sheet1").
+    *   `sheet` (string): Name of the sheet/tab. Sheet names follow the language of the account that owns the spreadsheet, so get it from `list_sheets` rather than assuming it.
     *   `ranges` (object): Dictionary mapping range strings (A1 notation) to 2D arrays of values. Example: `{ "A1:B2": [[1, 2], [3, 4]], "D5": [["Hello"]] }`.
     *   _Returns:_ Result of the operation ([`values.batchUpdate` response](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values/batchUpdate#response-body)).
 *   **`add_rows`**: Adds (inserts) empty rows to a sheet/tab at a specified index.
     *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
-    *   `sheet` (string): Name of the sheet/tab (e.g., "Sheet1").
+    *   `sheet` (string): Name of the sheet/tab. Sheet names follow the language of the account that owns the spreadsheet, so get it from `list_sheets` rather than assuming it.
     *   `count` (integer): Number of empty rows to insert.
     *   `start_row` (optional integer, default `0`): 0-based row index to start inserting rows. If omitted, defaults to `0` (inserts at the beginning).
     *   _Returns:_ Result of the operation ([`batchUpdate` response](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/batchUpdate#response-body)).
 *   **`list_sheets`**: Lists all sheet/tab names within a spreadsheet.
     *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
-    *   _Returns:_ List of sheet/tab name strings. Example: `["Sheet1", "Sheet2"]`.
+    *   _Returns:_ List of sheet/tab name strings. Example: `["Sheet1", "Sheet2"]` in an English account, `["Página1"]` in a Portuguese one.
 *   **`create_sheet`**: Adds a new sheet/tab to a spreadsheet.
     *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
     *   `title` (string): Name for the new sheet/tab.
@@ -242,24 +242,24 @@ _Refer to the [ID Reference Guide](#-id-reference-guide) for more information ab
     *   _Returns:_ Dictionary with `successes` and `failures` lists.
 *   **`add_columns`**: Adds (inserts) empty columns to a sheet/tab at a specified index.
     *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
-    *   `sheet` (string): Name of the sheet/tab (e.g., "Sheet1").
+    *   `sheet` (string): Name of the sheet/tab. Sheet names follow the language of the account that owns the spreadsheet, so get it from `list_sheets` rather than assuming it.
     *   `count` (integer): Number of empty columns to insert.
     *   `start_column` (optional integer, default `0`): 0-based column index to start inserting. If omitted, defaults to `0` (inserts at the beginning).
     *   _Returns:_ Result of the operation ([`batchUpdate` response](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/batchUpdate#response-body)).
 *   **`copy_sheet`**: Duplicates a sheet/tab from one spreadsheet to another and optionally renames it.
     *   `src_spreadsheet` (string): Source spreadsheet ID (from its URL).
-    *   `src_sheet` (string): Source sheet/tab name (e.g., "Sheet1").
+    *   `src_sheet` (string): Source sheet/tab name, as returned by `list_sheets`.
     *   `dst_spreadsheet` (string): Destination spreadsheet ID (from its URL).
     *   `dst_sheet` (string): Desired sheet/tab name in the destination spreadsheet.
     *   _Returns:_ Result of the copy and optional rename operations.
 *   **`rename_sheet`**: Renames an existing sheet/tab.
     *   `spreadsheet` (string): The spreadsheet ID (from its URL).
-    *   `sheet` (string): Current sheet/tab name (e.g., "Sheet1").
+    *   `sheet` (string): Current sheet/tab name, as returned by `list_sheets`.
     *   `new_name` (string): New sheet/tab name (e.g., "Transactions").
     *   _Returns:_ Result of the operation ([`batchUpdate` response](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/batchUpdate#response-body)).
 *   **`add_chart`**: Creates a chart in a Google Spreadsheet from specified data.
     *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
-    *   `sheet` (string): Name of the sheet/tab containing the data (e.g., "Sheet1").
+    *   `sheet` (string): Name of the sheet/tab containing the data, as returned by `list_sheets`.
     *   `chart_type` (string): Type of chart to create. Options: `COLUMN` (vertical bars), `BAR` (horizontal bars), `LINE`, `AREA`, `PIE`, `SCATTER`, `COMBO`, `HISTOGRAM`.
     *   `data_range` (string): A1 notation range for the chart data (e.g., "A1:C10"). First row is treated as headers.
     *   `title` (optional string): Chart title.
