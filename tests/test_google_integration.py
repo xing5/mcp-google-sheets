@@ -8,12 +8,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
 from mcp_google_sheets import server
 
 
 TOOLS_WITH_INTEGRATION_COVERAGE = {
+    "add_bigquery_data_source",
     "add_chart",
     "add_columns",
     "add_rows",
@@ -23,6 +25,7 @@ TOOLS_WITH_INTEGRATION_COVERAGE = {
     "create_sheet",
     "create_spreadsheet",
     "find_in_spreadsheet",
+    "get_data_source_data",
     "get_multiple_sheet_data",
     "get_multiple_spreadsheet_summary",
     "get_sheet_data",
@@ -30,6 +33,7 @@ TOOLS_WITH_INTEGRATION_COVERAGE = {
     "list_folders",
     "list_sheets",
     "list_spreadsheets",
+    "refresh_data_source",
     "rename_sheet",
     "search_spreadsheets",
     "share_spreadsheet",
@@ -61,8 +65,9 @@ class IntegrationCoverageDeclarationTests(unittest.TestCase):
         self.assertEqual(TOOLS_WITH_INTEGRATION_COVERAGE, current_tool_names())
 
 
-@unittest.skipUnless(integration_enabled(), "set RUN_GOOGLE_INTEGRATION=1 to run live Google tests")
-class GoogleSheetsIntegrationTests(unittest.TestCase):
+class LiveGoogleTestBase(unittest.TestCase):
+    """Shared bootstrap for the suites that talk to the real Google APIs."""
+
     @classmethod
     def setUpClass(cls):
         folder_id = os.environ.get("DRIVE_FOLDER_ID")
@@ -72,6 +77,7 @@ class GoogleSheetsIntegrationTests(unittest.TestCase):
         creds = None
         credentials_config = os.environ.get("CREDENTIALS_CONFIG")
         service_account_path = os.environ.get("SERVICE_ACCOUNT_PATH")
+        token_path = os.environ.get("TOKEN_PATH")
 
         if credentials_config:
             creds = service_account.Credentials.from_service_account_info(
@@ -83,8 +89,16 @@ class GoogleSheetsIntegrationTests(unittest.TestCase):
                 service_account_path,
                 scopes=server.SCOPES,
             )
+        elif token_path and os.path.exists(token_path):
+            # OAuth is a first-class auth method for this server, so the live suite
+            # accepts an already-authorized token too. It never starts the interactive
+            # flow: a missing or stale token skips instead of blocking on a browser.
+            creds = Credentials.from_authorized_user_file(token_path, server.SCOPES)
         else:
-            raise unittest.SkipTest("SERVICE_ACCOUNT_PATH or CREDENTIALS_CONFIG is required")
+            raise unittest.SkipTest(
+                "SERVICE_ACCOUNT_PATH, CREDENTIALS_CONFIG or an authorized TOKEN_PATH "
+                "is required"
+            )
 
         cls.sheets_service = build("sheets", "v4", credentials=creds, cache_discovery=False)
         cls.drive_service = build("drive", "v3", credentials=creds, cache_discovery=False)
@@ -115,6 +129,9 @@ class GoogleSheetsIntegrationTests(unittest.TestCase):
         self.assertEqual(created["folder"], self.folder_id)
         return spreadsheet_id
 
+
+@unittest.skipUnless(integration_enabled(), "set RUN_GOOGLE_INTEGRATION=1 to run live Google tests")
+class GoogleSheetsIntegrationTests(LiveGoogleTestBase):
     def wait_for_search_result(self, title, spreadsheet_id, timeout_seconds=45):
         deadline = time.time() + timeout_seconds
         last_result = []
@@ -285,3 +302,74 @@ class GoogleSheetsIntegrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(integration_enabled(), "set RUN_GOOGLE_INTEGRATION=1 to run live Google tests")
+class ConnectedSheetsIntegrationTests(LiveGoogleTestBase):
+    """Live coverage for the BigQuery tools.
+
+    Requires ENABLE_BIGQUERY_TOOLS so that server.SCOPES carries the BigQuery scope:
+    this way the suite also verifies the conditional scope wiring end to end.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        if not server.BIGQUERY_ENABLED:
+            raise unittest.SkipTest(
+                "set ENABLE_BIGQUERY_TOOLS=1 to run Connected Sheets integration tests"
+            )
+
+        cls.bigquery_project = os.environ.get("GOOGLE_TEST_BIGQUERY_PROJECT")
+        if not cls.bigquery_project:
+            raise unittest.SkipTest(
+                "GOOGLE_TEST_BIGQUERY_PROJECT is required for Connected Sheets tests"
+            )
+
+        super().setUpClass()
+
+    def wait_for_data_source(self, spreadsheet_id, sheet_title, timeout_seconds=90):
+        deadline = time.time() + timeout_seconds
+        last_result = {}
+        while time.time() < deadline:
+            last_result = server.get_data_source_data(
+                spreadsheet_id, sheet_title, ctx=self.ctx
+            )
+            if last_result.get("dataExecutionStatus", {}).get("state") == "SUCCEEDED":
+                return last_result
+            time.sleep(3)
+        self.fail(f"data source did not finish refreshing: {last_result}")
+
+    def test_bigquery_data_source_lifecycle(self):
+        suffix = int(time.time())
+        spreadsheet_id = self.create_test_spreadsheet(
+            f"mcp-google-sheets-it-bigquery-{suffix}"
+        )
+
+        # A constant query scans no table, so it needs no dataset and costs nothing
+        query = os.environ.get("GOOGLE_TEST_BIGQUERY_QUERY", "SELECT 1 AS answer")
+
+        created = server.add_bigquery_data_source(
+            spreadsheet_id,
+            project_id=self.bigquery_project,
+            query=query,
+            ctx=self.ctx,
+        )
+        self.assertNotIn("error", created)
+        self.assertIsNotNone(created["dataSourceId"])
+
+        sheet_title = created["sheetTitle"]
+        self.assertIsNotNone(sheet_title, "the created data source sheet must be named")
+
+        # get_sheet_data cannot read this sheet: the values API rejects DATA_SOURCE
+        # sheets, which is why get_data_source_data exists
+        data = self.wait_for_data_source(spreadsheet_id, sheet_title)
+        self.assertTrue(data["rows"])
+        self.assertTrue(data["columns"])
+
+        refreshed = server.refresh_data_source(
+            spreadsheet_id,
+            data_source_id=created["dataSourceId"],
+            ctx=self.ctx,
+        )
+        self.assertNotIn("error", refreshed)
+        self.wait_for_data_source(spreadsheet_id, sheet_title)

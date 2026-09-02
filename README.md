@@ -174,6 +174,11 @@ When filtering, use these exact tool names (comma-separated, no spaces):
 - `share_spreadsheet`
 - `update_cells`
 
+**Connected Sheets (BigQuery) Tools:** *(only registered when `ENABLE_BIGQUERY_TOOLS=1`)*
+- `add_bigquery_data_source`
+- `get_data_source_data`
+- `refresh_data_source`
+
 **Note:** If neither `--include-tools` nor `ENABLED_TOOLS` is specified, all tools are enabled (default behavior).
 
 ---
@@ -271,6 +276,34 @@ _Refer to the [ID Reference Guide](#-id-reference-guide) for more information ab
     *   `height` (optional integer, default `400`): Height of the chart in pixels.
     *   _Returns:_ Result object with success status, chart ID, and operation details.
 
+**Connected Sheets (BigQuery) Tools** *(opt-in)*
+
+> ⚠️ These tools are only registered when `ENABLE_BIGQUERY_TOOLS=1` (or `--enable-bigquery`).
+> Enabling them adds the `https://www.googleapis.com/auth/bigquery.readonly` OAuth scope, so
+> **an existing `token.json` must be deleted and re-authorized**, and the client must be restarted.
+> Note that running the server *without* the flag rewrites `token.json` with the narrower scope
+> set, which silently drops BigQuery access until you authorize again.
+> Requires a Google Cloud project with **billing enabled** and the `BigQuery API` turned on.
+
+*   **`add_bigquery_data_source`**: Connects a BigQuery table or query to a spreadsheet as a Connected Sheets data source. Google creates a new `DATA_SOURCE` sheet and starts an asynchronous refresh.
+    *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
+    *   `project_id` (string): Google Cloud project billed for the BigQuery jobs.
+    *   `dataset_id` / `table_id` (optional strings): Connect an existing table. Both are required together.
+    *   `query` (optional string): Run custom SQL instead. Mutually exclusive with `dataset_id`/`table_id`.
+    *   `table_project_id` (optional string): Project owning the table, when different from `project_id` (e.g. `bigquery-public-data`). Defaults to `project_id`.
+    *   _Returns:_ Object with `dataSourceId`, `sheetId`, `sheetTitle` and `dataExecutionStatus`.
+*   **`refresh_data_source`**: Re-runs the queries behind the data sources. Asynchronous — poll `get_data_source_data` until the state is `SUCCEEDED`.
+    *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
+    *   `data_source_id` (optional string): Refresh only this data source.
+    *   `refresh_all` (optional boolean, default `False`): Refresh every data source instead.
+    *   `force` (optional boolean, default `True`): Refresh even when the data looks up to date.
+    *   _Returns:_ Object with the `statuses` reported for each refreshed object.
+*   **`get_data_source_data`**: Reads the rows of a `DATA_SOURCE` sheet. `get_sheet_data` **cannot** read these sheets, because they are not addressable in A1 notation and the values API rejects them.
+    *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
+    *   `sheet` (string): Name of the data source sheet, as returned by `add_bigquery_data_source`.
+    *   `max_rows` (optional integer, default `100`): Maximum number of rows to return.
+    *   _Returns:_ Object with `columns`, `rows`, `rowCount`, `truncated` and `dataExecutionStatus`.
+
 **MCP Resources:**
 
 *   **`spreadsheet://{spreadsheet_id}/info`**: Get basic metadata about a Google Spreadsheet.
@@ -286,6 +319,7 @@ This setup is **required** before running the server.
 2.  **Enable APIs:** Navigate to "APIs & Services" -> "Library". Search for and enable:
     *   `Google Sheets API`
     *   `Google Drive API`
+    *   `BigQuery API` (only if you plan to set `ENABLE_BIGQUERY_TOOLS`)
 3.  **Configure Credentials:** You need to choose *one* authentication method below (Service Account is recommended).
 
 ---
@@ -387,6 +421,7 @@ The server checks for credentials in this order:
 | `CREDENTIALS_PATH`               | OAuth 2.0                   | Path to the OAuth 2.0 Client ID JSON file.                       | `credentials.json` |
 | `TOKEN_PATH`                     | OAuth 2.0                   | Path to store the generated OAuth token.                         | `token.json`       |
 | `CREDENTIALS_CONFIG`             | Service Account / OAuth 2.0 | Base64 encoded JSON string of credentials content.               | -                  |
+| `ENABLE_BIGQUERY_TOOLS`          | All                         | Set to `1` to register the Connected Sheets tools and request the `bigquery.readonly` scope. Requires re-authorization. | -                  |
 
 ---
 

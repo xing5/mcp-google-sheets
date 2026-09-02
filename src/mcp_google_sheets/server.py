@@ -29,7 +29,8 @@ import google.auth
 logger = logging.getLogger(__name__)
 
 # Constants
-SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+BASE_SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+BIGQUERY_READONLY_SCOPE = 'https://www.googleapis.com/auth/bigquery.readonly'
 CREDENTIALS_CONFIG = os.environ.get('CREDENTIALS_CONFIG')
 TOKEN_PATH = os.environ.get('TOKEN_PATH', 'token.json')
 CREDENTIALS_PATH = os.environ.get('CREDENTIALS_PATH', 'credentials.json')
@@ -71,7 +72,44 @@ def _parse_enabled_tools() -> Optional[set]:
     tools = {tool.strip() for tool in enabled_tools_str.split(',') if tool.strip()}
     return tools if tools else None
 
+def _parse_bigquery_enabled() -> bool:
+    """
+    Parse the Connected Sheets opt-in from --enable-bigquery or ENABLE_BIGQUERY_TOOLS.
+
+    Connected Sheets requests need the bigquery.readonly OAuth scope. Requesting that
+    scope unconditionally would widen the scope set of every existing installation and
+    force each user through the consent flow again, so the feature is opt-in.
+
+    Returns:
+        True when the BigQuery tools and the bigquery.readonly scope should be enabled.
+    """
+    if '--enable-bigquery' in sys.argv:
+        return True
+
+    return os.environ.get('ENABLE_BIGQUERY_TOOLS', '').strip().lower() in {
+        '1', 'true', 'yes', 'on'
+    }
+
+
+def _resolve_scopes(bigquery_enabled: bool) -> List[str]:
+    """
+    Build the OAuth scope list for the current configuration.
+
+    Args:
+        bigquery_enabled: Whether Connected Sheets (BigQuery) support is enabled
+
+    Returns:
+        List of OAuth scopes to request
+    """
+    scopes = list(BASE_SCOPES)
+    if bigquery_enabled:
+        scopes.append(BIGQUERY_READONLY_SCOPE)
+    return scopes
+
+
 ENABLED_TOOLS = _parse_enabled_tools()
+BIGQUERY_ENABLED = _parse_bigquery_enabled()
+SCOPES = _resolve_scopes(BIGQUERY_ENABLED)
 
 @dataclass
 class SpreadsheetContext:
@@ -187,23 +225,30 @@ mcp = FastMCP("Google Spreadsheet",
               port=_resolved_port)
 
 
-def tool(annotations: Optional[ToolAnnotations] = None):
+def tool(annotations: Optional[ToolAnnotations] = None, requires_bigquery: bool = False):
     """
     Conditional tool decorator that only registers tools if they're enabled.
-    
+
     This wrapper checks ENABLED_TOOLS configuration and only applies the @mcp.tool
     decorator if the tool should be enabled. If ENABLED_TOOLS is None (default),
     all tools are enabled.
-    
+
     Args:
         annotations: Optional ToolAnnotations for the tool
-    
+        requires_bigquery: True when the tool needs Connected Sheets support. Such tools
+            are only registered when BIGQUERY_ENABLED is set, because without the
+            bigquery.readonly scope every call would fail with PERMISSION_DENIED.
+
     Returns:
         Decorator function
     """
     def decorator(func):
         tool_name = func.__name__
-        
+
+        # BigQuery tools stay hidden unless the extra scope was opted into
+        if requires_bigquery and not BIGQUERY_ENABLED:
+            return func
+
         # If no filtering is configured, or if this tool is in the enabled list
         if ENABLED_TOOLS is None or tool_name in ENABLED_TOOLS:
             # Apply the mcp.tool decorator
@@ -1309,7 +1354,7 @@ def _get_sheet_id(sheets_service: Any, spreadsheet_id: str, sheet_name: str) -> 
         for sheet in spreadsheet.get('sheets', []):
             if sheet['properties']['title'] == sheet_name:
                 return sheet['properties']['sheetId']
-        
+
         return None
     except Exception:
         return None
@@ -1375,12 +1420,20 @@ def find_in_spreadsheet(spreadsheet_id: str,
         # Get spreadsheet metadata to find all sheets
         spreadsheet = sheets_service.spreadsheets().get(
             spreadsheetId=spreadsheet_id,
-            fields='sheets(properties(title,sheetId))'
+            fields='sheets(properties(title,sheetId,sheetType))'
         ).execute()
 
         sheets_to_search = []
         for s in spreadsheet.get('sheets', []):
-            sheet_title = s.get('properties', {}).get('title')
+            properties = s.get('properties', {})
+            sheet_title = properties.get('title')
+
+            # Data source sheets are not addressable by the values API, and letting one
+            # raise here would discard the matches already found in the other sheets
+            sheet_type = properties.get('sheetType')
+            if sheet_type and sheet_type != 'GRID':
+                continue
+
             if sheet is None or sheet_title == sheet:
                 sheets_to_search.append(sheet_title)
 
@@ -1727,6 +1780,291 @@ def add_chart(spreadsheet_id: str,
         }
 
 
+def _find_data_source_sheet(sheets_service: Any,
+                            spreadsheet_id: str,
+                            data_source_id: str) -> Dict[str, Any]:
+    """
+    Locate the DATA_SOURCE sheet backing a data source.
+
+    The addDataSource reply carries the new dataSourceId but does not name the sheet
+    Google creates for it, so the sheet has to be looked up afterwards. Without its
+    title the caller has no way to reach the data through get_data_source_data.
+
+    Args:
+        sheets_service: Google Sheets service instance
+        spreadsheet_id: The spreadsheet ID
+        data_source_id: The data source whose sheet should be found
+
+    Returns:
+        Dictionary with the sheet title and ID, both None when it cannot be found
+    """
+    try:
+        spreadsheet = sheets_service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            fields='sheets(properties(title,sheetId,dataSourceSheetProperties(dataSourceId)))'
+        ).execute()
+
+        for sheet in spreadsheet.get('sheets', []):
+            properties = sheet.get('properties', {})
+            source_properties = properties.get('dataSourceSheetProperties', {})
+            if source_properties.get('dataSourceId') == data_source_id:
+                return {
+                    "title": properties.get('title'),
+                    "sheetId": properties.get('sheetId'),
+                }
+
+        return {"title": None, "sheetId": None}
+    except Exception:
+        return {"title": None, "sheetId": None}
+
+
+def _bigquery_error(action: str, error: Exception) -> Dict[str, Any]:
+    """
+    Build a structured error payload for a failed Connected Sheets call.
+
+    Args:
+        action: Short description of the operation that failed
+        error: The exception raised by the Google API client
+
+    Returns:
+        Dictionary with an error message and, for missing scopes, a remediation hint
+    """
+    message = str(error)
+    payload = {"error": f"{action}: {message}"}
+
+    # A token minted before the opt-in carries no BigQuery scope, and the raw API
+    # message does not say how to fix it
+    if 'bigquery.readonly' in message or 'scopes are not sufficient' in message:
+        payload["hint"] = (
+            "The active credentials do not carry the BigQuery scope. Set "
+            "ENABLE_BIGQUERY_TOOLS=1, delete the file at TOKEN_PATH and authorize again."
+        )
+    return payload
+
+
+@tool(
+    annotations=ToolAnnotations(
+        title="Add BigQuery Data Source",
+        destructiveHint=True,
+    ),
+    requires_bigquery=True,
+)
+def add_bigquery_data_source(spreadsheet_id: str,
+                             project_id: str,
+                             dataset_id: Optional[str] = None,
+                             table_id: Optional[str] = None,
+                             query: Optional[str] = None,
+                             table_project_id: Optional[str] = None,
+                             ctx: Context = None) -> Dict[str, Any]:
+    """
+    Connect a BigQuery table or query to a spreadsheet as a Connected Sheets data source.
+
+    Google creates a new DATA_SOURCE sheet for the connection and starts an asynchronous
+    refresh. That sheet is not addressable in A1 notation, so get_sheet_data cannot read
+    it; use get_data_source_data instead, polling until the execution state is SUCCEEDED.
+
+    Args:
+        spreadsheet_id: The ID of the spreadsheet (found in the URL)
+        project_id: Google Cloud project billed for the BigQuery jobs. Needs billing enabled.
+        dataset_id: BigQuery dataset ID when connecting a table. Requires table_id.
+        table_id: BigQuery table ID when connecting a table. Requires dataset_id.
+        query: BigQuery SQL to run instead of connecting a table. Cannot be combined
+            with dataset_id or table_id.
+        table_project_id: Project owning the table, when it differs from the billing
+            project (e.g. 'bigquery-public-data'). Defaults to project_id.
+
+    Returns:
+        Object with the new dataSourceId, the created sheet and the execution status,
+        or an object with an error key
+    """
+    sheets_service = ctx.request_context.lifespan_context.sheets_service
+
+    wants_table = bool(dataset_id or table_id)
+    if wants_table and query:
+        return {"error": "Provide either query or dataset_id/table_id, not both"}
+    if not wants_table and not query:
+        return {"error": "Provide query, or both dataset_id and table_id"}
+    if wants_table and not (dataset_id and table_id):
+        return {"error": "Connecting a table requires both dataset_id and table_id"}
+
+    if query:
+        bigquery_spec = {
+            "projectId": project_id,
+            "querySpec": {"rawQuery": query},
+        }
+    else:
+        bigquery_spec = {
+            "projectId": project_id,
+            "tableSpec": {
+                "tableProjectId": table_project_id or project_id,
+                "datasetId": dataset_id,
+                "tableId": table_id,
+            },
+        }
+
+    request_body = {
+        "requests": [
+            {"addDataSource": {"dataSource": {"spec": {"bigQuery": bigquery_spec}}}}
+        ]
+    }
+
+    try:
+        result = sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body=request_body
+        ).execute()
+    except Exception as e:
+        return _bigquery_error("Failed to add BigQuery data source", e)
+
+    reply = result.get('replies', [{}])[0].get('addDataSource', {})
+    data_source_id = reply.get('dataSource', {}).get('dataSourceId')
+    created_sheet = _find_data_source_sheet(sheets_service, spreadsheet_id, data_source_id)
+
+    return {
+        "dataSourceId": data_source_id,
+        "sheetId": created_sheet["sheetId"],
+        "sheetTitle": created_sheet["title"],
+        "dataExecutionStatus": reply.get('dataExecutionStatus', {}),
+        "result": result,
+    }
+
+
+@tool(
+    annotations=ToolAnnotations(
+        title="Refresh Data Source",
+        destructiveHint=True,
+    ),
+    requires_bigquery=True,
+)
+def refresh_data_source(spreadsheet_id: str,
+                        data_source_id: Optional[str] = None,
+                        refresh_all: bool = False,
+                        force: bool = True,
+                        ctx: Context = None) -> Dict[str, Any]:
+    """
+    Re-run the BigQuery queries behind a spreadsheet's Connected Sheets data sources.
+
+    The refresh is asynchronous: this returns as soon as Google accepts the request.
+    Poll get_data_source_data until its execution state is SUCCEEDED before reading
+    the rows.
+
+    Args:
+        spreadsheet_id: The ID of the spreadsheet (found in the URL)
+        data_source_id: Refresh only this data source. Mutually exclusive with refresh_all.
+        refresh_all: Refresh every data source in the spreadsheet
+        force: Refresh even when the data is considered up to date (default True)
+
+    Returns:
+        Object with the execution status reported for each refreshed object, or an
+        object with an error key
+    """
+    sheets_service = ctx.request_context.lifespan_context.sheets_service
+
+    if data_source_id and refresh_all:
+        return {"error": "Provide either data_source_id or refresh_all, not both"}
+    if not data_source_id and not refresh_all:
+        return {"error": "Provide data_source_id, or set refresh_all to True"}
+
+    refresh_request = {"force": force}
+    if refresh_all:
+        refresh_request["isAll"] = True
+    else:
+        refresh_request["dataSourceId"] = data_source_id
+
+    try:
+        result = sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={"requests": [{"refreshDataSource": refresh_request}]}
+        ).execute()
+    except Exception as e:
+        return _bigquery_error("Failed to refresh data source", e)
+
+    reply = result.get('replies', [{}])[0].get('refreshDataSource', {})
+    return {
+        "statuses": reply.get('statuses', []),
+        "result": result,
+    }
+
+
+@tool(
+    annotations=ToolAnnotations(
+        title="Get Data Source Data",
+        readOnlyHint=True,
+    ),
+    requires_bigquery=True,
+)
+def get_data_source_data(spreadsheet_id: str,
+                         sheet: str,
+                         max_rows: int = 100,
+                         ctx: Context = None) -> Dict[str, Any]:
+    """
+    Read the rows materialized on a Connected Sheets DATA_SOURCE sheet.
+
+    A DATA_SOURCE sheet is not addressable in A1 notation, so the values API used by
+    get_sheet_data rejects it with 'Unable to parse range'. This tool reads the grid
+    representation instead, and reports the refresh state so callers can poll until
+    the data is available.
+
+    Args:
+        spreadsheet_id: The ID of the spreadsheet (found in the URL)
+        sheet: Name of the data source sheet, as returned by add_bigquery_data_source
+        max_rows: Maximum number of rows to return (default 100)
+
+    Returns:
+        Object with the column names, the rows, the execution status and whether the
+        result was truncated, or an object with an error key
+    """
+    sheets_service = ctx.request_context.lifespan_context.sheets_service
+    limit = max(1, max_rows)
+
+    try:
+        result = sheets_service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            ranges=[f"'{sheet}'"],
+            includeGridData=True
+        ).execute()
+    except Exception as e:
+        return _bigquery_error("Failed to read data source sheet", e)
+
+    for candidate in result.get('sheets', []):
+        properties = candidate.get('properties', {})
+        if properties.get('title') != sheet:
+            continue
+
+        sheet_type = properties.get('sheetType')
+        if sheet_type and sheet_type != 'DATA_SOURCE':
+            return {
+                "error": f"Sheet '{sheet}' is not a data source sheet. "
+                         f"Use get_sheet_data instead."
+            }
+
+        source_properties = properties.get('dataSourceSheetProperties', {})
+        columns = [
+            column.get('reference', {}).get('name')
+            for column in source_properties.get('columns', [])
+        ]
+
+        rows = []
+        for chunk in candidate.get('data', []):
+            for row in chunk.get('rowData', []):
+                values = [cell.get('formattedValue', '')
+                          for cell in row.get('values', [])]
+                if any(values):
+                    rows.append(values)
+
+        return {
+            "sheet": sheet,
+            "dataSourceId": source_properties.get('dataSourceId'),
+            "dataExecutionStatus": source_properties.get('dataExecutionStatus', {}),
+            "columns": columns,
+            "rows": rows[:limit],
+            "rowCount": len(rows[:limit]),
+            "truncated": len(rows) > limit,
+        }
+
+    return {"error": f"Sheet '{sheet}' not found"}
+
+
 def main():
     _configure_logging()
 
@@ -1735,7 +2073,11 @@ def main():
         logger.info("Tool filtering enabled. Active tools: %s", ', '.join(sorted(ENABLED_TOOLS)))
     else:
         logger.info("Tool filtering disabled. All tools are enabled.")
-    
+
+    if BIGQUERY_ENABLED:
+        logger.info("Connected Sheets tools enabled. Requesting scope: %s",
+                    BIGQUERY_READONLY_SCOPE)
+
     # Run the server
     transport = "stdio"
     for i, arg in enumerate(sys.argv):

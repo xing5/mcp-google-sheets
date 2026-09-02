@@ -64,9 +64,12 @@ class RecordingSpreadsheetsResource:
             ],
         }
         self.batch_update_result = {"replies": [{"addChart": {"chart": {"chartId": 7}}}]}
+        self.grid_metadata = None
 
     def get(self, **kwargs):
         self.calls.append(("spreadsheets.get", kwargs))
+        if self.grid_metadata is not None and kwargs.get("includeGridData"):
+            return FakeRequest(self.grid_metadata)
         return FakeRequest(self.metadata)
 
     def values(self):
@@ -517,6 +520,424 @@ class ToolRequestConstructionTests(unittest.TestCase):
                 "heightPixels": 200,
             },
         )
+
+
+class BigQueryConfigurationTests(unittest.TestCase):
+    def test_bigquery_is_disabled_by_default(self):
+        with patch.object(sys, "argv", ["mcp-google-sheets"]):
+            with patch.dict(os.environ, {}, clear=True):
+                self.assertFalse(server._parse_bigquery_enabled())
+
+    def test_truthy_environment_values_enable_bigquery(self):
+        for value in ("1", "true", "TRUE", "yes", "on"):
+            with self.subTest(value=value):
+                with patch.object(sys, "argv", ["mcp-google-sheets"]):
+                    with patch.dict(os.environ, {"ENABLE_BIGQUERY_TOOLS": value}, clear=True):
+                        self.assertTrue(server._parse_bigquery_enabled())
+
+    def test_falsy_environment_values_leave_bigquery_disabled(self):
+        for value in ("", "0", "false", "no", "off"):
+            with self.subTest(value=value):
+                with patch.object(sys, "argv", ["mcp-google-sheets"]):
+                    with patch.dict(os.environ, {"ENABLE_BIGQUERY_TOOLS": value}, clear=True):
+                        self.assertFalse(server._parse_bigquery_enabled())
+
+    def test_cli_flag_enables_bigquery(self):
+        with patch.object(sys, "argv", ["mcp-google-sheets", "--enable-bigquery"]):
+            with patch.dict(os.environ, {}, clear=True):
+                self.assertTrue(server._parse_bigquery_enabled())
+
+    def test_default_scopes_exclude_bigquery(self):
+        self.assertEqual(server._resolve_scopes(False), server.BASE_SCOPES)
+
+    def test_enabling_bigquery_appends_the_readonly_scope(self):
+        scopes = server._resolve_scopes(True)
+
+        self.assertEqual(scopes[:2], server.BASE_SCOPES)
+        self.assertEqual(scopes[-1], server.BIGQUERY_READONLY_SCOPE)
+
+    def test_resolving_scopes_does_not_mutate_the_base_list(self):
+        server._resolve_scopes(True)
+
+        self.assertNotIn(server.BIGQUERY_READONLY_SCOPE, server.BASE_SCOPES)
+
+
+class BigQueryToolGatingTests(unittest.TestCase):
+    """The BigQuery tools stay unregistered until the extra scope is opted into."""
+
+    def _register(self, requires_bigquery, bigquery_enabled, enabled_tools=None):
+        def sample_tool():
+            return None
+
+        with patch.object(server, "mcp") as mcp:
+            with patch.object(server, "BIGQUERY_ENABLED", bigquery_enabled):
+                with patch.object(server, "ENABLED_TOOLS", enabled_tools):
+                    returned = server.tool(requires_bigquery=requires_bigquery)(sample_tool)
+        return mcp, sample_tool, returned
+
+    def test_bigquery_tool_is_not_registered_when_disabled(self):
+        mcp, original, returned = self._register(True, False)
+
+        self.assertIs(returned, original)
+        mcp.tool.assert_not_called()
+
+    def test_bigquery_tool_is_registered_when_enabled(self):
+        mcp, _, _ = self._register(True, True)
+
+        mcp.tool.assert_called_once()
+
+    def test_bigquery_tool_still_honours_the_tool_filter(self):
+        mcp, original, returned = self._register(True, True, enabled_tools={"other_tool"})
+
+        self.assertIs(returned, original)
+        mcp.tool.assert_not_called()
+
+    def test_regular_tools_are_unaffected_by_the_bigquery_flag(self):
+        mcp, _, _ = self._register(False, False)
+
+        mcp.tool.assert_called_once()
+
+
+class BigQueryToolRequestConstructionTests(unittest.TestCase):
+    def test_add_bigquery_data_source_builds_a_table_spec(self):
+        sheets_service = RecordingSheetsService()
+        spreadsheets = sheets_service.spreadsheets_resource
+        spreadsheets.batch_update_result = {
+            "replies": [{"addDataSource": {
+                "dataSource": {"dataSourceId": "ds-1", "sheetId": 456},
+                "dataExecutionStatus": {"state": "RUNNING"},
+            }}]
+        }
+
+        result = server.add_bigquery_data_source(
+            "spreadsheet-id",
+            project_id="billing-project",
+            dataset_id="samples",
+            table_id="shakespeare",
+            table_project_id="bigquery-public-data",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        request = spreadsheets.calls[0][1]["body"]["requests"][0]
+        spec = request["addDataSource"]["dataSource"]["spec"]["bigQuery"]
+        self.assertEqual(spec["projectId"], "billing-project")
+        self.assertEqual(spec["tableSpec"], {
+            "tableProjectId": "bigquery-public-data",
+            "datasetId": "samples",
+            "tableId": "shakespeare",
+        })
+        self.assertEqual(result["dataSourceId"], "ds-1")
+        self.assertEqual(result["dataExecutionStatus"], {"state": "RUNNING"})
+
+    def test_table_project_defaults_to_the_billing_project(self):
+        sheets_service = RecordingSheetsService()
+
+        server.add_bigquery_data_source(
+            "spreadsheet-id",
+            project_id="billing-project",
+            dataset_id="samples",
+            table_id="shakespeare",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        request = sheets_service.spreadsheets_resource.calls[0][1]["body"]["requests"][0]
+        spec = request["addDataSource"]["dataSource"]["spec"]["bigQuery"]
+        self.assertEqual(spec["tableSpec"]["tableProjectId"], "billing-project")
+
+    def test_add_bigquery_data_source_builds_a_query_spec(self):
+        sheets_service = RecordingSheetsService()
+
+        server.add_bigquery_data_source(
+            "spreadsheet-id",
+            project_id="billing-project",
+            query="SELECT 1 AS answer",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        request = sheets_service.spreadsheets_resource.calls[0][1]["body"]["requests"][0]
+        spec = request["addDataSource"]["dataSource"]["spec"]["bigQuery"]
+        self.assertEqual(spec["querySpec"], {"rawQuery": "SELECT 1 AS answer"})
+        self.assertNotIn("tableSpec", spec)
+
+    def test_add_bigquery_data_source_resolves_the_created_sheet(self):
+        """The addDataSource reply does not name the sheet Google creates for it."""
+        sheets_service = RecordingSheetsService()
+        spreadsheets = sheets_service.spreadsheets_resource
+        spreadsheets.batch_update_result = {
+            "replies": [{"addDataSource": {"dataSource": {"dataSourceId": "ds-1"}}}]
+        }
+        spreadsheets.metadata = {
+            "sheets": [
+                {"properties": {"title": "Sheet1", "sheetId": 123}},
+                {"properties": {
+                    "title": "Connected Sheet 1",
+                    "sheetId": 456,
+                    "dataSourceSheetProperties": {"dataSourceId": "ds-1"},
+                }},
+            ]
+        }
+
+        result = server.add_bigquery_data_source(
+            "spreadsheet-id",
+            project_id="billing-project",
+            query="SELECT 1",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertEqual(result["sheetTitle"], "Connected Sheet 1")
+        self.assertEqual(result["sheetId"], 456)
+
+    def test_add_bigquery_data_source_survives_an_unresolvable_sheet(self):
+        sheets_service = RecordingSheetsService()
+        spreadsheets = sheets_service.spreadsheets_resource
+        spreadsheets.batch_update_result = {
+            "replies": [{"addDataSource": {"dataSource": {"dataSourceId": "ds-1"}}}]
+        }
+        spreadsheets.metadata = {"sheets": []}
+
+        result = server.add_bigquery_data_source(
+            "spreadsheet-id",
+            project_id="billing-project",
+            query="SELECT 1",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertEqual(result["dataSourceId"], "ds-1")
+        self.assertIsNone(result["sheetTitle"])
+
+    def test_add_bigquery_data_source_rejects_a_missing_target(self):
+        sheets_service = RecordingSheetsService()
+
+        result = server.add_bigquery_data_source(
+            "spreadsheet-id",
+            project_id="billing-project",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertIn("error", result)
+        self.assertEqual(sheets_service.spreadsheets_resource.calls, [])
+
+    def test_add_bigquery_data_source_rejects_a_conflicting_target(self):
+        sheets_service = RecordingSheetsService()
+
+        result = server.add_bigquery_data_source(
+            "spreadsheet-id",
+            project_id="billing-project",
+            dataset_id="samples",
+            table_id="shakespeare",
+            query="SELECT 1",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertIn("error", result)
+        self.assertEqual(sheets_service.spreadsheets_resource.calls, [])
+
+    def test_add_bigquery_data_source_rejects_a_table_without_its_dataset(self):
+        sheets_service = RecordingSheetsService()
+
+        result = server.add_bigquery_data_source(
+            "spreadsheet-id",
+            project_id="billing-project",
+            table_id="shakespeare",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertIn("error", result)
+        self.assertEqual(sheets_service.spreadsheets_resource.calls, [])
+
+    def test_missing_scope_is_reported_with_a_remediation_hint(self):
+        """The raw API message says the scope is missing but not how to fix it."""
+        sheets_service = RecordingSheetsService()
+        sheets_service.spreadsheets_resource.batch_update_result = Exception(
+            "The request scopes are not sufficient for performing this operation. "
+            "Please include bigquery.readonly scope."
+        )
+
+        result = server.add_bigquery_data_source(
+            "spreadsheet-id",
+            project_id="billing-project",
+            query="SELECT 1",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertIn("error", result)
+        self.assertIn("ENABLE_BIGQUERY_TOOLS", result["hint"])
+
+    def test_refresh_data_source_targets_a_single_source(self):
+        sheets_service = RecordingSheetsService()
+        sheets_service.spreadsheets_resource.batch_update_result = {"replies": [{}]}
+
+        server.refresh_data_source(
+            "spreadsheet-id",
+            data_source_id="ds-1",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        request = sheets_service.spreadsheets_resource.calls[0][1]["body"]["requests"][0]
+        self.assertEqual(request["refreshDataSource"]["dataSourceId"], "ds-1")
+        self.assertNotIn("isAll", request["refreshDataSource"])
+
+    def test_refresh_data_source_can_target_every_source(self):
+        sheets_service = RecordingSheetsService()
+        sheets_service.spreadsheets_resource.batch_update_result = {"replies": [{}]}
+
+        server.refresh_data_source(
+            "spreadsheet-id",
+            refresh_all=True,
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        request = sheets_service.spreadsheets_resource.calls[0][1]["body"]["requests"][0]
+        self.assertTrue(request["refreshDataSource"]["isAll"])
+        self.assertNotIn("dataSourceId", request["refreshDataSource"])
+
+    def test_refresh_data_source_rejects_ambiguous_arguments(self):
+        sheets_service = RecordingSheetsService()
+
+        result = server.refresh_data_source(
+            "spreadsheet-id",
+            data_source_id="ds-1",
+            refresh_all=True,
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertIn("error", result)
+        self.assertEqual(sheets_service.spreadsheets_resource.calls, [])
+
+    def test_refresh_data_source_rejects_missing_arguments(self):
+        sheets_service = RecordingSheetsService()
+
+        result = server.refresh_data_source(
+            "spreadsheet-id",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertIn("error", result)
+        self.assertEqual(sheets_service.spreadsheets_resource.calls, [])
+
+    def test_get_data_source_data_reads_grid_data(self):
+        sheets_service = RecordingSheetsService()
+        sheets_service.spreadsheets_resource.grid_metadata = {
+            "sheets": [{
+                "properties": {
+                    "title": "shakespeare",
+                    "sheetType": "DATA_SOURCE",
+                    "dataSourceSheetProperties": {
+                        "dataSourceId": "ds-1",
+                        "dataExecutionStatus": {"state": "SUCCEEDED"},
+                        "columns": [
+                            {"reference": {"name": "word"}},
+                            {"reference": {"name": "word_count"}},
+                        ],
+                    },
+                },
+                "data": [{"rowData": [
+                    {"values": [{"formattedValue": "the"}, {"formattedValue": "995"}]},
+                    {"values": [{"formattedValue": "and"}, {"formattedValue": "706"}]},
+                ]}],
+            }]
+        }
+
+        result = server.get_data_source_data(
+            "spreadsheet-id", "shakespeare",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertEqual(result["columns"], ["word", "word_count"])
+        self.assertEqual(result["rows"], [["the", "995"], ["and", "706"]])
+        self.assertEqual(result["dataSourceId"], "ds-1")
+        self.assertEqual(result["dataExecutionStatus"], {"state": "SUCCEEDED"})
+        self.assertFalse(result["truncated"])
+
+    def test_get_data_source_data_never_uses_the_values_api(self):
+        """The values API rejects DATA_SOURCE sheets; that is why this tool exists."""
+        sheets_service = RecordingSheetsService()
+        sheets_service.spreadsheets_resource.grid_metadata = {
+            "sheets": [{
+                "properties": {"title": "shakespeare", "sheetType": "DATA_SOURCE"},
+                "data": [{"rowData": [{"values": [{"formattedValue": "the"}]}]}],
+            }]
+        }
+
+        server.get_data_source_data(
+            "spreadsheet-id", "shakespeare",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertEqual(sheets_service.spreadsheets_resource.values_resource.calls, [])
+
+    def test_get_data_source_data_truncates_to_max_rows(self):
+        sheets_service = RecordingSheetsService()
+        sheets_service.spreadsheets_resource.grid_metadata = {
+            "sheets": [{
+                "properties": {"title": "shakespeare", "sheetType": "DATA_SOURCE"},
+                "data": [{"rowData": [
+                    {"values": [{"formattedValue": str(number)}]}
+                    for number in range(10)
+                ]}],
+            }]
+        }
+
+        result = server.get_data_source_data(
+            "spreadsheet-id", "shakespeare", max_rows=3,
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertEqual(result["rowCount"], 3)
+        self.assertTrue(result["truncated"])
+
+    def test_get_data_source_data_rejects_a_regular_sheet(self):
+        sheets_service = RecordingSheetsService()
+        sheets_service.spreadsheets_resource.grid_metadata = {
+            "sheets": [{"properties": {"title": "Sheet1", "sheetType": "GRID"}}]
+        }
+
+        result = server.get_data_source_data(
+            "spreadsheet-id", "Sheet1",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertIn("error", result)
+
+    def test_get_data_source_data_returns_error_for_missing_sheet(self):
+        sheets_service = RecordingSheetsService()
+        sheets_service.spreadsheets_resource.grid_metadata = {"sheets": []}
+
+        result = server.get_data_source_data(
+            "spreadsheet-id", "absent",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertIn("error", result)
+
+
+class FindInSpreadsheetDataSourceTests(unittest.TestCase):
+    """A data source sheet must not break the search across the other sheets."""
+
+    def test_data_source_sheets_are_skipped_instead_of_failing_the_search(self):
+        sheets_service = RecordingSheetsService()
+        spreadsheets = sheets_service.spreadsheets_resource
+        spreadsheets.metadata = {
+            "sheets": [
+                {"properties": {"title": "Sheet1", "sheetId": 1, "sheetType": "GRID"}},
+                {"properties": {"title": "connected", "sheetId": 2,
+                                "sheetType": "DATA_SOURCE"}},
+            ]
+        }
+        values_resource = spreadsheets.values_resource
+        values_resource.get_results["Sheet1"] = {"values": [["hello world"]]}
+        values_resource.get_results["connected"] = Exception(
+            "Unable to parse range: connected"
+        )
+
+        results = server.find_in_spreadsheet(
+            "spreadsheet-id", "hello",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertEqual(results, [{"sheet": "Sheet1", "cell": "A1", "value": "hello world"}])
+        queried = [call[1]["range"] for call in values_resource.calls]
+        self.assertNotIn("connected", queried)
 
 
 if __name__ == "__main__":
