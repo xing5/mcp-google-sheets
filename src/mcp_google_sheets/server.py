@@ -71,7 +71,53 @@ def _parse_enabled_tools() -> Optional[set]:
     tools = {tool.strip() for tool in enabled_tools_str.split(',') if tool.strip()}
     return tools if tools else None
 
+def _parse_share_allowlist() -> Optional[List[str]]:
+    """
+    Parse the share recipient allowlist from SHARE_ALLOWED_EMAILS.
+
+    Entries are comma separated. 'user@host' matches one address and '@host' matches
+    every address in that domain.
+
+    Returns:
+        The allowlist entries, or None when the variable is unset or empty, which
+        leaves sharing unrestricted
+    """
+    raw_value = os.environ.get('SHARE_ALLOWED_EMAILS', '')
+    entries = [entry.strip().lower() for entry in raw_value.split(',') if entry.strip()]
+    return entries or None
+
+
+def _share_allowed(email: Optional[str], allowlist: Optional[List[str]]) -> bool:
+    """
+    Whether an address may receive a share invitation.
+
+    Args:
+        email: The recipient address
+        allowlist: Entries from _parse_share_allowlist, or None for no restriction
+
+    Returns:
+        True when the address may be invited
+    """
+    if allowlist is None:
+        return True
+    if not email:
+        return False
+
+    candidate = email.strip().lower()
+    # compare the domain exactly, so '@example.com' never matches 'notexample.com'
+    domain = candidate.rpartition('@')[2]
+
+    for entry in allowlist:
+        if entry.startswith('@'):
+            if domain == entry[1:]:
+                return True
+        elif candidate == entry:
+            return True
+    return False
+
+
 ENABLED_TOOLS = _parse_enabled_tools()
+SHARE_ALLOWLIST = _parse_share_allowlist()
 
 @dataclass
 class SpreadsheetContext:
@@ -1073,6 +1119,13 @@ def share_spreadsheet(spreadsheet_id: str,
                 'error': f"Invalid role '{role}'. Must be 'reader', 'commenter', or 'writer'."
             })
              continue
+
+        if not _share_allowed(email_address, SHARE_ALLOWLIST):
+            failures.append({
+                'email_address': email_address,
+                'error': "Address is not listed in SHARE_ALLOWED_EMAILS."
+            })
+            continue
 
         permission = {
             'type': 'user',

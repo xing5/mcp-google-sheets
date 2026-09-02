@@ -240,6 +240,7 @@ _Refer to the [ID Reference Guide](#-id-reference-guide) for more information ab
     *   `recipients` (array of objects): `[{"email_address": "user@example.com", "role": "writer"}, ...]`. Roles: `reader`, `commenter`, `writer`.
     *   `send_notification` (optional boolean, default `True`): Send email notifications to recipients.
     *   _Returns:_ Dictionary with `successes` and `failures` lists.
+    *   _Optional restriction:_ set `SHARE_ALLOWED_EMAILS` to limit who can be invited. Recipients outside the list are reported under `failures` and no invitation is sent. Leaving it unset keeps sharing unrestricted.
 *   **`add_columns`**: Adds (inserts) empty columns to a sheet/tab at a specified index.
     *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
     *   `sheet` (string): Name of the sheet/tab (e.g., "Sheet1").
@@ -387,6 +388,7 @@ The server checks for credentials in this order:
 | `CREDENTIALS_PATH`               | OAuth 2.0                   | Path to the OAuth 2.0 Client ID JSON file.                       | `credentials.json` |
 | `TOKEN_PATH`                     | OAuth 2.0                   | Path to store the generated OAuth token.                         | `token.json`       |
 | `CREDENTIALS_CONFIG`             | Service Account / OAuth 2.0 | Base64 encoded JSON string of credentials content.               | -                  |
+| `SHARE_ALLOWED_EMAILS`           | All                         | Comma-separated allowlist of share recipients. `user@host` matches one address, `@host` a whole domain. Unset means sharing is unrestricted. | -                  |
 
 ---
 
