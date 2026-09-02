@@ -187,6 +187,60 @@ class StdioSafetyTests(unittest.TestCase):
         run.assert_called_once_with(transport="stdio")
 
 
+class DriveQueryEscapingTests(unittest.TestCase):
+    """Values interpolated into a Drive query must not be able to alter it."""
+
+    def test_single_quotes_are_escaped(self):
+        self.assertEqual(server._escape_query_value("O'Brien"), "O\\'Brien")
+
+    def test_backslashes_are_escaped(self):
+        self.assertEqual(server._escape_query_value("a\\b"), "a\\\\b")
+
+    def test_backslash_is_escaped_before_the_quote_it_precedes(self):
+        self.assertEqual(server._escape_query_value("a\\'b"), "a\\\\\\'b")
+
+    def test_ordinary_text_is_left_alone(self):
+        self.assertEqual(server._escape_query_value("budget 2026"), "budget 2026")
+
+    def test_search_cannot_escape_its_own_filter(self):
+        drive_service = RecordingDriveService()
+        injection = "x' or mimeType != 'nope"
+
+        server.search_spreadsheets(injection, ctx=fake_ctx(drive_service=drive_service))
+
+        sent = drive_service.files_resource.calls[-1][1]["q"]
+        # the closing quote of the injected fragment must arrive escaped, so the
+        # mimeType filter cannot be detached from the rest of the query
+        self.assertNotIn("x' or mimeType", sent)
+        self.assertIn("\\'", sent)
+
+    def test_listing_escapes_the_folder_id(self):
+        drive_service = RecordingDriveService()
+
+        with patch.object(server.logger, "info"):
+            server.list_spreadsheets(
+                folder_id="abc' or '1'='1",
+                ctx=fake_ctx(drive_service=drive_service),
+            )
+
+        sent = drive_service.files_resource.calls[-1][1]["q"]
+        self.assertNotIn("abc' or '1'='1", sent)
+        self.assertIn("\\'", sent)
+
+    def test_folder_listing_escapes_the_parent_id(self):
+        drive_service = RecordingDriveService()
+
+        with patch.object(server.logger, "info"):
+            server.list_folders(
+                parent_folder_id="abc' or '1'='1",
+                ctx=fake_ctx(drive_service=drive_service),
+            )
+
+        sent = drive_service.files_resource.calls[-1][1]["q"]
+        self.assertNotIn("abc' or '1'='1", sent)
+        self.assertIn("\\'", sent)
+
+
 class A1HelperTests(unittest.TestCase):
     def test_column_index_to_letter(self):
         self.assertEqual(server._column_index_to_letter(0), "A")
