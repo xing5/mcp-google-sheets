@@ -119,12 +119,26 @@ class RecordingFilesResource:
         return FakeRequest(self.list_result)
 
 
+class RecordingPermissionsResource:
+    def __init__(self):
+        self.calls = []
+        self.create_result = {"id": "permission-id"}
+
+    def create(self, **kwargs):
+        self.calls.append(("permissions.create", kwargs))
+        return FakeRequest(self.create_result)
+
+
 class RecordingDriveService:
     def __init__(self):
         self.files_resource = RecordingFilesResource()
+        self.permissions_resource = RecordingPermissionsResource()
 
     def files(self):
         return self.files_resource
+
+    def permissions(self):
+        return self.permissions_resource
 
 
 def fake_ctx(sheets_service=None, drive_service=None, folder_id=None):
@@ -147,6 +161,87 @@ class ParseEnabledToolsTests(unittest.TestCase):
         with patch.object(sys, "argv", ["mcp-google-sheets"]):
             with patch.dict(os.environ, {}, clear=True):
                 self.assertIsNone(server._parse_enabled_tools())
+
+
+class ShareAllowlistTests(unittest.TestCase):
+    """SHARE_ALLOWED_EMAILS restricts who share_spreadsheet may invite."""
+
+    def test_sharing_is_unrestricted_when_unset(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(server._parse_share_allowlist())
+
+    def test_an_empty_value_is_treated_as_unset(self):
+        with patch.dict(os.environ, {"SHARE_ALLOWED_EMAILS": "  ,  "}, clear=True):
+            self.assertIsNone(server._parse_share_allowlist())
+
+    def test_entries_are_split_trimmed_and_lowercased(self):
+        with patch.dict(os.environ,
+                        {"SHARE_ALLOWED_EMAILS": " A@X.com , @Y.COM "}, clear=True):
+            self.assertEqual(server._parse_share_allowlist(), ["a@x.com", "@y.com"])
+
+    def test_no_allowlist_allows_any_address(self):
+        self.assertTrue(server._share_allowed("anyone@example.com", None))
+
+    def test_exact_address_matches(self):
+        allowlist = ["someone@example.com"]
+        self.assertTrue(server._share_allowed("someone@example.com", allowlist))
+        self.assertFalse(server._share_allowed("other@example.com", allowlist))
+
+    def test_domain_entry_matches_any_address_in_it(self):
+        allowlist = ["@example.com"]
+        self.assertTrue(server._share_allowed("anyone@example.com", allowlist))
+        self.assertFalse(server._share_allowed("anyone@other.com", allowlist))
+
+    def test_matching_ignores_case_and_padding(self):
+        self.assertTrue(server._share_allowed("  Someone@Example.COM ",
+                                              ["someone@example.com"]))
+
+    def test_domain_entry_does_not_match_a_lookalike_domain(self):
+        self.assertFalse(server._share_allowed("target@notexample.com",
+                                               ["@example.com"]))
+
+    def test_missing_address_is_refused_when_an_allowlist_exists(self):
+        self.assertFalse(server._share_allowed(None, ["someone@example.com"]))
+
+    def test_unlisted_recipient_is_refused_without_calling_the_api(self):
+        drive_service = RecordingDriveService()
+
+        with patch.object(server, "SHARE_ALLOWLIST", ["colleague@example.com"]):
+            result = server.share_spreadsheet(
+                "spreadsheet-id",
+                [{"email_address": "stranger@example.com", "role": "writer"}],
+                ctx=fake_ctx(drive_service=drive_service),
+            )
+
+        self.assertEqual(result["successes"], [])
+        self.assertEqual(len(result["failures"]), 1)
+        self.assertEqual(drive_service.permissions_resource.calls, [])
+
+    def test_listed_recipient_is_shared_normally(self):
+        drive_service = RecordingDriveService()
+
+        with patch.object(server, "SHARE_ALLOWLIST", ["colleague@example.com"]):
+            result = server.share_spreadsheet(
+                "spreadsheet-id",
+                [{"email_address": "colleague@example.com", "role": "writer"}],
+                ctx=fake_ctx(drive_service=drive_service),
+            )
+
+        self.assertEqual(len(result["successes"]), 1)
+        self.assertEqual(len(drive_service.permissions_resource.calls), 1)
+
+    def test_sharing_is_untouched_when_no_allowlist_is_configured(self):
+        drive_service = RecordingDriveService()
+
+        with patch.object(server, "SHARE_ALLOWLIST", None):
+            result = server.share_spreadsheet(
+                "spreadsheet-id",
+                [{"email_address": "anyone@example.com", "role": "writer"}],
+                ctx=fake_ctx(drive_service=drive_service),
+            )
+
+        self.assertEqual(len(result["successes"]), 1)
+        self.assertEqual(len(drive_service.permissions_resource.calls), 1)
 
 
 class StdioSafetyTests(unittest.TestCase):
