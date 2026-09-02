@@ -1005,7 +1005,7 @@ def list_spreadsheets(folder_id: Optional[str] = None, ctx: Context = None) -> L
     
     # If a specific folder is provided or configured, search only in that folder
     if target_folder_id:
-        query += f" and '{target_folder_id}' in parents"
+        query += f" and '{_escape_query_value(target_folder_id)}' in parents"
         logger.info("Searching for spreadsheets in folder: %s", target_folder_id)
     else:
         logger.info("Searching for spreadsheets in 'My Drive'")
@@ -1133,7 +1133,7 @@ def list_folders(parent_folder_id: Optional[str] = None, ctx: Context = None) ->
     
     # If a specific parent folder is provided, search only within that folder
     if parent_folder_id:
-        query += f" and '{parent_folder_id}' in parents"
+        query += f" and '{_escape_query_value(parent_folder_id)}' in parents"
         logger.info("Searching for folders in parent folder: %s", parent_folder_id)
     else:
         # Search in root of My Drive (folders that don't have any parent folders)
@@ -1191,9 +1191,10 @@ def search_spreadsheets(query: str,
 
     # Build the search query for Google Drive
     # Search only for spreadsheets and match the query in name or fullText
+    escaped_query = _escape_query_value(query)
     search_query = (
         f"mimeType='application/vnd.google-apps.spreadsheet' and "
-        f"(name contains '{query}' or fullText contains '{query}')"
+        f"(name contains '{escaped_query}' or fullText contains '{escaped_query}')"
     )
 
     try:
@@ -1222,6 +1223,22 @@ def search_spreadsheets(query: str,
         ]
     except Exception as e:
         return [{'error': f'Search failed: {str(e)}'}]
+
+
+def _escape_query_value(value: str) -> str:
+    """
+    Escape a value before interpolating it into a Drive query string.
+
+    An unescaped apostrophe closes the quoted term early and lets the rest of the
+    value be read as query syntax, which can drop the filters around it.
+
+    Args:
+        value: The raw value to interpolate
+
+    Returns:
+        The value with backslashes and single quotes escaped
+    """
+    return value.replace('\\', '\\\\').replace("'", "\\'")
 
 
 def _column_index_to_letter(index: int) -> str:
