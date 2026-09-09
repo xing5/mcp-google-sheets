@@ -31,15 +31,19 @@ FROM base AS builder
 
 COPY . .
 
-RUN uv sync
-
-# Build the project (produces dist/*.whl)
-RUN uv build
+# --locked fails the build when uv.lock is stale against pyproject.toml, so the image can only
+# ever be built from a reviewed lockfile. --no-editable installs the project itself into the
+# venv, which is what lets the runner ship without a source tree.
+RUN uv sync --locked --no-dev --no-editable
 
 FROM base AS runner
 
-COPY --from=builder /app/dist/*.whl /app/
+# Ship the venv, not a wheel: installing a built wheel with `uv pip` resolves its dependencies
+# fresh from the wheel's own metadata and ignores uv.lock entirely, so every runtime dependency
+# floats to whatever is newest at build time. `uv venv` in base is load-bearing — it puts the
+# managed interpreter at the exact path this venv's symlinks and console-script shebangs
+# resolve against.
+COPY --from=builder /app/.venv /app/.venv
 
-RUN uv pip install /app/*.whl
-
-CMD ["uv", "run", "mcp-google-sheets", "--transport", "sse"]
+# Absolute path, not `uv run`: the runner carries no project for uv to discover.
+CMD ["/app/.venv/bin/mcp-google-sheets", "--transport", "sse"]
