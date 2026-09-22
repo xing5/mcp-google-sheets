@@ -261,7 +261,7 @@ class ToolRequestConstructionTests(unittest.TestCase):
     def test_get_sheet_data_uses_values_api_by_default(self):
         sheets_service = RecordingSheetsService()
         values_resource = sheets_service.spreadsheets_resource.values_resource
-        values_resource.get_results["Sheet1!A1:B2"] = {"values": [["a", "b"]]}
+        values_resource.get_results["'Sheet1'!A1:B2"] = {"values": [["a", "b"]]}
 
         result = server.get_sheet_data(
             "spreadsheet-id",
@@ -274,14 +274,14 @@ class ToolRequestConstructionTests(unittest.TestCase):
             result,
             {
                 "spreadsheetId": "spreadsheet-id",
-                "valueRanges": [{"range": "Sheet1!A1:B2", "values": [["a", "b"]]}],
+                "valueRanges": [{"range": "'Sheet1'!A1:B2", "values": [["a", "b"]]}],
             },
         )
         self.assertEqual(
             values_resource.calls[-1],
             (
                 "values.get",
-                {"spreadsheetId": "spreadsheet-id", "range": "Sheet1!A1:B2"},
+                {"spreadsheetId": "spreadsheet-id", "range": "'Sheet1'!A1:B2"},
             ),
         )
 
@@ -303,7 +303,7 @@ class ToolRequestConstructionTests(unittest.TestCase):
                 "values.update",
                 {
                     "spreadsheetId": "spreadsheet-id",
-                    "range": "Sheet1!A1:B2",
+                    "range": "'Sheet1'!A1:B2",
                     "valueInputOption": "USER_ENTERED",
                     "body": {"values": [[1, 2], [3, 4]]},
                 },
@@ -521,3 +521,59 @@ class ToolRequestConstructionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SheetNameQuotingTests(unittest.TestCase):
+    """A sheet name must never reach the API as a bare A1 token.
+
+    'Tab2' unquoted parses as column TAB row 2, which the live API rejects with
+    'Range (Sheet1!TAB2) exceeds grid limits'. Names with spaces or apostrophes
+    are rejected too.
+    """
+
+    def test_quote_sheet_name(self):
+        self.assertEqual(server._quote_sheet_name("Sheet1"), "'Sheet1'")
+        self.assertEqual(server._quote_sheet_name("Tab2"), "'Tab2'")
+        self.assertEqual(server._quote_sheet_name("Q1 Results"), "'Q1 Results'")
+        self.assertEqual(server._quote_sheet_name("Bob's Tab"), "'Bob''s Tab'")
+
+    def test_get_sheet_data_without_range_quotes_whole_sheet(self):
+        sheets_service = RecordingSheetsService()
+        values_resource = sheets_service.spreadsheets_resource.values_resource
+        values_resource.get_results["'Tab2'"] = {"values": [["x"]]}
+
+        result = server.get_sheet_data(
+            "spreadsheet-id", "Tab2", ctx=fake_ctx(sheets_service=sheets_service)
+        )
+
+        self.assertEqual(
+            values_resource.calls[-1],
+            ("values.get", {"spreadsheetId": "spreadsheet-id", "range": "'Tab2'"}),
+        )
+        self.assertEqual(result["valueRanges"][0]["values"], [["x"]])
+
+    def test_update_cells_quotes_name_with_space(self):
+        sheets_service = RecordingSheetsService()
+
+        server.update_cells(
+            "spreadsheet-id",
+            "Q1 Results",
+            "A1:B2",
+            [[1, 2], [3, 4]],
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        call = sheets_service.spreadsheets_resource.values_resource.calls[-1]
+        self.assertEqual(call[1]["range"], "'Q1 Results'!A1:B2")
+
+    def test_get_multiple_sheet_data_quotes_each_sheet(self):
+        sheets_service = RecordingSheetsService()
+        values_resource = sheets_service.spreadsheets_resource.values_resource
+        values_resource.get_results["'Tab2'!A1:A1"] = {"values": [["y"]]}
+
+        results = server.get_multiple_sheet_data(
+            [{"spreadsheet_id": "spreadsheet-id", "sheet": "Tab2", "range": "A1:A1"}],
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertEqual(results[0]["data"], [["y"]])
