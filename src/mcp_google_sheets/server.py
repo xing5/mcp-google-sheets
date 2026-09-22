@@ -248,9 +248,9 @@ def get_sheet_data(spreadsheet_id: str,
 
     # Construct the range - keep original API behavior
     if range:
-        full_range = f"{sheet}!{range}"
+        full_range = f"{_quote_sheet_name(sheet)}!{range}"
     else:
-        full_range = sheet
+        full_range = _quote_sheet_name(sheet)
     
     if include_grid_data:
         # Use full API to get all grid data including formatting
@@ -302,9 +302,9 @@ def get_sheet_formulas(spreadsheet_id: str,
     
     # Construct the range
     if range:
-        full_range = f"{sheet}!{range}"
+        full_range = f"{_quote_sheet_name(sheet)}!{range}"
     else:
-        full_range = sheet  # Get all formulas in the specified sheet
+        full_range = _quote_sheet_name(sheet)  # Get all formulas in the specified sheet
     
     # Call the Sheets API
     result = sheets_service.spreadsheets().values().get(
@@ -343,7 +343,7 @@ def update_cells(spreadsheet_id: str,
     sheets_service = ctx.request_context.lifespan_context.sheets_service
     
     # Construct the range
-    full_range = f"{sheet}!{range}"
+    full_range = f"{_quote_sheet_name(sheet)}!{range}"
     
     # Prepare the value range object
     value_range_body = {
@@ -388,7 +388,7 @@ def batch_update_cells(spreadsheet_id: str,
     # Prepare the batch update request
     data = []
     for range_str, values in ranges.items():
-        full_range = f"{sheet}!{range_str}"
+        full_range = f"{_quote_sheet_name(sheet)}!{range_str}"
         data.append({
             'range': full_range,
             'values': values
@@ -734,7 +734,7 @@ def get_multiple_sheet_data(queries: List[Dict[str, str]],
 
         try:
             # Construct the range
-            full_range = f"{sheet}!{range_str}"
+            full_range = f"{_quote_sheet_name(sheet)}!{range_str}"
             
             # Call the Sheets API
             result = sheets_service.spreadsheets().values().get(
@@ -1222,6 +1222,18 @@ def search_spreadsheets(query: str,
         ]
     except Exception as e:
         return [{'error': f'Search failed: {str(e)}'}]
+
+
+def _quote_sheet_name(sheet: str) -> str:
+    """
+    Quote a sheet name for use in an A1 notation range.
+
+    Google Sheets parses an unquoted name as a cell reference where it can, so a
+    tab called 'Tab2' becomes column TAB row 2, and a name containing a space or
+    a punctuation character is rejected outright. Single-quoting is always valid,
+    so quote unconditionally and escape any embedded single quote by doubling it.
+    """
+    return "'" + sheet.replace("'", "''") + "'"
 
 
 def _column_index_to_letter(index: int) -> str:
