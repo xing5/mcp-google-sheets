@@ -17,11 +17,14 @@ TOOLS_WITH_INTEGRATION_COVERAGE = {
     "add_chart",
     "add_columns",
     "add_rows",
+    "append_table_rows",
     "batch_update",
     "batch_update_cells",
     "copy_sheet",
     "create_sheet",
     "create_spreadsheet",
+    "create_table",
+    "delete_table",
     "find_in_spreadsheet",
     "get_multiple_sheet_data",
     "get_multiple_spreadsheet_summary",
@@ -30,10 +33,12 @@ TOOLS_WITH_INTEGRATION_COVERAGE = {
     "list_folders",
     "list_sheets",
     "list_spreadsheets",
+    "list_tables",
     "rename_sheet",
     "search_spreadsheets",
     "share_spreadsheet",
     "update_cells",
+    "update_table",
 }
 
 
@@ -262,6 +267,46 @@ class GoogleSheetsIntegrationTests(unittest.TestCase):
             any(cell["sheet"] == "Sheet1" and cell["cell"] == "A2" for cell in found_cells),
             found_cells,
         )
+
+        table_create = server.create_table(
+            primary_id,
+            "Sheet1",
+            "D1:F5",
+            "Task Tracker",
+            columns=[
+                {"name": "Task", "type": "TEXT"},
+                {"name": "Status", "type": "DROPDOWN", "dropdown_values": ["Not Started", "In Progress", "Done"]},
+                {"name": "Completion", "type": "PERCENT"},
+            ],
+            has_footer=False,
+            ctx=self.ctx,
+        )
+        self.assertTrue(table_create.get("success"), table_create)
+        table_id = table_create.get("tableId")
+        self.assertIsNotNone(table_id)
+
+        tables = server.list_tables(primary_id, sheet="Sheet1", ctx=self.ctx)
+        self.assertTrue(any(str(t.get("tableId")) == str(table_id) for t in tables), tables)
+
+        table_append = server.append_table_rows(
+            primary_id,
+            table_id,
+            [["Feature X", "In Progress", 0.5]],
+            ctx=self.ctx,
+        )
+        self.assertTrue(table_append.get("success"), table_append)
+
+        table_update = server.update_table(
+            primary_id,
+            table_id,
+            name="Updated Task Tracker",
+            has_footer=True,
+            ctx=self.ctx,
+        )
+        self.assertTrue(table_update.get("success"), table_update)
+
+        table_delete = server.delete_table(primary_id, table_id, ctx=self.ctx)
+        self.assertTrue(table_delete.get("success"), table_delete)
 
         share_email = os.environ.get("GOOGLE_TEST_SHARE_EMAIL")
         if share_email:

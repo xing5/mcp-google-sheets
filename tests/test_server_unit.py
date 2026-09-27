@@ -519,5 +519,269 @@ class ToolRequestConstructionTests(unittest.TestCase):
         )
 
 
+class TableTests(unittest.TestCase):
+    def test_grid_range_to_a1(self):
+        grid_range = {
+            "sheetId": 0,
+            "startColumnIndex": 0,
+            "endColumnIndex": 3,
+            "startRowIndex": 0,
+            "endRowIndex": 10,
+        }
+        self.assertEqual(server._grid_range_to_a1("Sheet1", grid_range), "Sheet1!A1:C10")
+        self.assertEqual(server._grid_range_to_a1(None, grid_range), "A1:C10")
+
+    def test_build_table_column_properties(self):
+        columns = [
+            {"name": "Task", "type": "TEXT"},
+            {
+                "name": "Status",
+                "type": "DROPDOWN",
+                "dropdown_values": ["Pending", "Done"],
+            },
+            {"name": "Progress", "type": "PERCENT"},
+        ]
+        props = server._build_table_column_properties(columns)
+        self.assertEqual(len(props), 3)
+        self.assertEqual(props[0], {"columnIndex": 0, "columnName": "Task", "columnType": "TEXT"})
+        self.assertEqual(props[1]["columnIndex"], 1)
+        self.assertEqual(props[1]["columnName"], "Status")
+        self.assertEqual(props[1]["columnType"], "DROPDOWN")
+        self.assertEqual(
+            props[1]["dataValidationRule"],
+            {
+                "condition": {
+                    "type": "ONE_OF_LIST",
+                    "values": [{"userEnteredValue": "Pending"}, {"userEnteredValue": "Done"}],
+                }
+            },
+        )
+        self.assertEqual(props[2], {"columnIndex": 2, "columnName": "Progress", "columnType": "PERCENT"})
+
+    def test_build_row_data(self):
+        rows = [
+            ["Hello", 42, 3.14, True, "=SUM(A1:A2)", None]
+        ]
+        row_data = server._build_row_data(rows)
+        expected = [
+            {
+                "values": [
+                    {"userEnteredValue": {"stringValue": "Hello"}},
+                    {"userEnteredValue": {"numberValue": 42}},
+                    {"userEnteredValue": {"numberValue": 3.14}},
+                    {"userEnteredValue": {"boolValue": True}},
+                    {"userEnteredValue": {"formulaValue": "=SUM(A1:A2)"}},
+                    {},
+                ]
+            }
+        ]
+        self.assertEqual(row_data, expected)
+
+    def test_create_table_success(self):
+        sheets_service = RecordingSheetsService()
+        sheets_service.spreadsheets_resource.batch_update_result = {
+            "replies": [{"addTable": {"table": {"tableId": "table-123", "name": "Tasks"}}}]
+        }
+
+        result = server.create_table(
+            spreadsheet_id="spreadsheet-id",
+            sheet="Sheet1",
+            range="A1:C10",
+            name="Tasks",
+            columns=[
+                {"name": "Task", "type": "TEXT"},
+                {"name": "Status", "type": "DROPDOWN", "dropdown_values": ["Open", "Closed"]},
+            ],
+            table_id="table-123",
+            has_footer=True,
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["tableId"], "table-123")
+        _, call = sheets_service.spreadsheets_resource.calls[-1]
+        req = call["body"]["requests"][0]["addTable"]["table"]
+        self.assertEqual(req["name"], "Tasks")
+        self.assertEqual(req["tableId"], "table-123")
+        self.assertIn("footerColorStyle", req["rowsProperties"])
+        self.assertEqual(req["range"]["sheetId"], 123)
+        self.assertEqual(req["range"]["startColumnIndex"], 0)
+        self.assertEqual(req["range"]["endColumnIndex"], 3)
+        self.assertEqual(req["range"]["startRowIndex"], 0)
+        self.assertEqual(req["range"]["endRowIndex"], 10)
+
+    def test_create_table_sheet_not_found(self):
+        sheets_service = RecordingSheetsService()
+        result = server.create_table(
+            spreadsheet_id="spreadsheet-id",
+            sheet="NonExistentSheet",
+            range="A1:C10",
+            name="Tasks",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+        self.assertIn("error", result)
+        self.assertIn("NonExistentSheet", result["error"])
+
+    def test_create_table_invalid_range(self):
+        sheets_service = RecordingSheetsService()
+        result = server.create_table(
+            spreadsheet_id="spreadsheet-id",
+            sheet="Sheet1",
+            range="INVALID_RANGE!$$",
+            name="Tasks",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+        self.assertIn("error", result)
+
+    def test_list_tables(self):
+        sheets_service = RecordingSheetsService()
+        sheets_service.spreadsheets_resource.metadata = {
+            "sheets": [
+                {
+                    "properties": {"title": "Sheet1", "sheetId": 123},
+                    "tables": [
+                        {
+                            "tableId": "t1",
+                            "name": "Projects",
+                            "range": {
+                                "sheetId": 123,
+                                "startColumnIndex": 0,
+                                "endColumnIndex": 4,
+                                "startRowIndex": 0,
+                                "endRowIndex": 15,
+                            },
+                            "hasFooterRow": False,
+                            "columnProperties": [{"columnIndex": 0, "columnName": "Project"}],
+                        }
+                    ],
+                },
+                {
+                    "properties": {"title": "Data", "sheetId": 456},
+                    "tables": [
+                        {
+                            "tableId": "t2",
+                            "name": "Inventory",
+                            "range": {
+                                "sheetId": 456,
+                                "startColumnIndex": 1,
+                                "endColumnIndex": 3,
+                                "startRowIndex": 1,
+                                "endRowIndex": 20,
+                            },
+                            "hasFooterRow": True,
+                        }
+                    ],
+                },
+            ]
+        }
+
+        # List all tables
+        all_tables = server.list_tables(
+            spreadsheet_id="spreadsheet-id",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+        self.assertEqual(len(all_tables), 2)
+        self.assertEqual(all_tables[0]["name"], "Projects")
+        self.assertEqual(all_tables[0]["range"], "Sheet1!A1:D15")
+        self.assertEqual(all_tables[1]["name"], "Inventory")
+        self.assertEqual(all_tables[1]["range"], "Data!B2:C20")
+
+        # List tables filtered by sheet
+        sheet1_tables = server.list_tables(
+            spreadsheet_id="spreadsheet-id",
+            sheet="Sheet1",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+        self.assertEqual(len(sheet1_tables), 1)
+        self.assertEqual(sheet1_tables[0]["tableId"], "t1")
+
+    def test_update_table(self):
+        sheets_service = RecordingSheetsService()
+        sheets_service.spreadsheets_resource.batch_update_result = {"replies": [{}]}
+
+        result = server.update_table(
+            spreadsheet_id="spreadsheet-id",
+            table_id="t1",
+            name="New Project Tracker",
+            sheet="Sheet1",
+            range="A1:E20",
+            has_footer=True,
+            columns=[{"name": "Col1", "type": "TEXT"}],
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertTrue(result["success"])
+        _, call = sheets_service.spreadsheets_resource.calls[-1]
+        update_req = call["body"]["requests"][0]["updateTable"]
+        self.assertEqual(update_req["table"]["tableId"], "t1")
+        self.assertEqual(update_req["table"]["name"], "New Project Tracker")
+        self.assertIn("footerColorStyle", update_req["table"]["rowsProperties"])
+        self.assertEqual(update_req["fields"], "name,range,columnProperties,rowsProperties.footerColorStyle")
+
+    def test_update_table_no_fields_error(self):
+        sheets_service = RecordingSheetsService()
+        result = server.update_table(
+            spreadsheet_id="spreadsheet-id",
+            table_id="t1",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+        self.assertIn("error", result)
+
+    def test_append_table_rows(self):
+        sheets_service = RecordingSheetsService()
+        sheets_service.spreadsheets_resource.batch_update_result = {"replies": [{}]}
+
+        result = server.append_table_rows(
+            spreadsheet_id="spreadsheet-id",
+            table_id="t1",
+            values=[["Feature A", "In Progress", 0.75], ["Feature B", "Done", 1.0]],
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertTrue(result["success"])
+        _, call = sheets_service.spreadsheets_resource.calls[-1]
+        append_req = call["body"]["requests"][0]["appendCells"]
+        self.assertEqual(append_req["tableId"], "t1")
+        self.assertEqual(len(append_req["rows"]), 2)
+        self.assertEqual(
+            append_req["rows"][0]["values"][0]["userEnteredValue"]["stringValue"],
+            "Feature A",
+        )
+
+    def test_append_table_rows_validation_errors(self):
+        sheets_service = RecordingSheetsService()
+        empty_res = server.append_table_rows(
+            spreadsheet_id="spreadsheet-id",
+            table_id="t1",
+            values=[],
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+        self.assertIn("error", empty_res)
+
+        invalid_res = server.append_table_rows(
+            spreadsheet_id="spreadsheet-id",
+            table_id="t1",
+            values=["Not a list of lists"],
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+        self.assertIn("error", invalid_res)
+
+    def test_delete_table(self):
+        sheets_service = RecordingSheetsService()
+        sheets_service.spreadsheets_resource.batch_update_result = {"replies": [{}]}
+
+        result = server.delete_table(
+            spreadsheet_id="spreadsheet-id",
+            table_id="t1",
+            ctx=fake_ctx(sheets_service=sheets_service),
+        )
+
+        self.assertTrue(result["success"])
+        _, call = sheets_service.spreadsheets_resource.calls[-1]
+        del_req = call["body"]["requests"][0]["deleteTable"]
+        self.assertEqual(del_req["tableId"], "t1")
+
+
 if __name__ == "__main__":
     unittest.main()
+

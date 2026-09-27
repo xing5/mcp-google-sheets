@@ -14,6 +14,12 @@ from dataclasses import dataclass
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 # MCP imports
 from mcp.server.fastmcp import FastMCP, Context
 from mcp.types import ToolAnnotations
@@ -1343,6 +1349,78 @@ def _split_chart_source_ranges(source_range: Dict[str, int]) -> tuple[Dict[str, 
     return domain_range, series_ranges
 
 
+def _grid_range_to_a1(sheet_title: Optional[str], grid_range: Dict[str, int]) -> str:
+    """Convert a GridRange dict to A1 notation."""
+    start_col = grid_range.get("startColumnIndex", 0)
+    end_col = grid_range.get("endColumnIndex", start_col + 1)
+    start_row = grid_range.get("startRowIndex", 0) + 1
+    end_row = grid_range.get("endRowIndex", start_row)
+
+    start_col_letter = _column_index_to_letter(start_col)
+    end_col_letter = _column_index_to_letter(end_col - 1)
+
+    a1 = f"{start_col_letter}{start_row}:{end_col_letter}{end_row}"
+    if sheet_title:
+        return f"{sheet_title}!{a1}"
+    return a1
+
+
+def _build_table_column_properties(columns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Build columnProperties list for table requests."""
+    col_props = []
+    for idx, col in enumerate(columns):
+        prop: Dict[str, Any] = {}
+        col_idx = col.get("columnIndex", col.get("index", idx))
+        prop["columnIndex"] = col_idx
+
+        col_name = col.get("columnName", col.get("name"))
+        if col_name is not None:
+            prop["columnName"] = str(col_name)
+
+        col_type = col.get("columnType", col.get("type"))
+        if col_type is not None:
+            col_type_upper = str(col_type).upper()
+            prop["columnType"] = col_type_upper
+
+            if col_type_upper == "DROPDOWN":
+                dropdown_values = col.get("dropdown_values", col.get("values", []))
+                if dropdown_values:
+                    prop["dataValidationRule"] = {
+                        "condition": {
+                            "type": "ONE_OF_LIST",
+                            "values": [{"userEnteredValue": str(v)} for v in dropdown_values]
+                        }
+                    }
+                elif "dataValidationRule" in col:
+                    prop["dataValidationRule"] = col["dataValidationRule"]
+
+        if "dataValidationRule" in col and "dataValidationRule" not in prop:
+            prop["dataValidationRule"] = col["dataValidationRule"]
+
+        col_props.append(prop)
+    return col_props
+
+
+def _build_row_data(rows: List[List[Any]]) -> List[Dict[str, Any]]:
+    """Convert a 2D list of primitive values into Google Sheets RowData objects."""
+    row_data = []
+    for row in rows:
+        values = []
+        for cell in row:
+            if cell is None:
+                values.append({})
+            elif isinstance(cell, bool):
+                values.append({"userEnteredValue": {"boolValue": cell}})
+            elif isinstance(cell, (int, float)):
+                values.append({"userEnteredValue": {"numberValue": cell}})
+            elif isinstance(cell, str) and cell.startswith("="):
+                values.append({"userEnteredValue": {"formulaValue": cell}})
+            else:
+                values.append({"userEnteredValue": {"stringValue": str(cell)}})
+        row_data.append({"values": values})
+    return row_data
+
+
 @tool(
     annotations=ToolAnnotations(
         title="Find Cells",
@@ -1725,6 +1803,367 @@ def add_chart(spreadsheet_id: str,
         return {
             "error": f"Failed to add chart: {str(e)}"
         }
+
+
+@tool(
+    annotations=ToolAnnotations(
+        title="Create Table",
+        destructiveHint=True,
+    ),
+)
+def create_table(spreadsheet_id: str,
+                 sheet: str,
+                 range: str,
+                 name: str,
+                 columns: Optional[List[Dict[str, Any]]] = None,
+                 table_id: Optional[Union[int, str]] = None,
+                 has_footer: Optional[bool] = None,
+                 ctx: Context = None) -> Dict[str, Any]:
+    """
+    Create a new Table in a Google Spreadsheet.
+    
+    Tables provide structure, formatting, column types (dropdowns, checkboxes, dates, etc.),
+    filters, and headers/footers to ranges of data.
+    
+    Args:
+        spreadsheet_id: The ID of the spreadsheet (found in the URL)
+        sheet: The name of the sheet
+        range: The cell range in A1 notation for the table (e.g. 'A1:E10')
+        name: Name of the table (e.g. 'Project Tracker', 'Inventory')
+        columns: Optional list of column definitions. Each item can contain:
+                 - name / columnName: Column header name
+                 - type / columnType: Column type (e.g. 'TEXT', 'NUMBER', 'PERCENT', 'CURRENCY', 'DATE', 'DROPDOWN', 'CHECKBOX')
+                 - dropdown_values: List of string options when type is 'DROPDOWN'
+                 - dataValidationRule: Custom validation rule dict (optional)
+        table_id: Optional unique identifier for the table (integer or string). If not provided, Google Sheets generates one.
+        has_footer: Optional boolean to enable/disable the footer row.
+        
+    Returns:
+        Result of table creation including tableId and table definition.
+    """
+    sheets_service = ctx.request_context.lifespan_context.sheets_service
+
+    sheet_id = _get_sheet_id(sheets_service, spreadsheet_id, sheet)
+    if sheet_id is None:
+        return {"error": f"Sheet '{sheet}' not found in spreadsheet"}
+
+    try:
+        range_indices = _parse_a1_notation(range)
+    except ValueError as e:
+        return {"error": str(e)}
+
+    table_obj: Dict[str, Any] = {
+        "name": name,
+        "range": {
+            "sheetId": sheet_id,
+            **range_indices
+        }
+    }
+
+    if table_id is not None:
+        table_obj["tableId"] = str(table_id) if isinstance(table_id, str) else table_id
+    if has_footer is not None and has_footer:
+        table_obj["rowsProperties"] = {
+            "footerColorStyle": {"rgbColor": {"red": 0.9, "green": 0.9, "blue": 0.9}}
+        }
+    if columns:
+        table_obj["columnProperties"] = _build_table_column_properties(columns)
+
+    request_body = {
+        "requests": [{
+            "addTable": {
+                "table": table_obj
+            }
+        }]
+    }
+
+    try:
+        result = sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body=request_body
+        ).execute()
+
+        created_table = result.get('replies', [{}])[0].get('addTable', {}).get('table', {})
+        return {
+            "success": True,
+            "message": f"Table '{name}' created successfully",
+            "tableId": created_table.get('tableId', table_id),
+            "table": created_table,
+            "result": result
+        }
+    except Exception as e:
+        return {"error": f"Failed to create table: {str(e)}"}
+
+
+@tool(
+    annotations=ToolAnnotations(
+        title="List Tables",
+        readOnlyHint=True,
+    ),
+)
+def list_tables(spreadsheet_id: str,
+                sheet: Optional[str] = None,
+                ctx: Context = None) -> List[Dict[str, Any]]:
+    """
+    List tables in a Google Spreadsheet.
+    
+    Args:
+        spreadsheet_id: The ID of the spreadsheet (found in the URL)
+        sheet: Optional sheet name to filter tables by. If not provided, lists tables across all sheets.
+        
+    Returns:
+        List of tables found with their ID, name, sheet, range in A1 notation, columns, and footer configuration.
+    """
+    sheets_service = ctx.request_context.lifespan_context.sheets_service
+
+    try:
+        spreadsheet = sheets_service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            fields='sheets(properties(title,sheetId),tables)'
+        ).execute()
+
+        tables_list = []
+        for s in spreadsheet.get('sheets', []):
+            sheet_title = s.get('properties', {}).get('title', '')
+            if sheet is not None and sheet_title != sheet:
+                continue
+
+            for table in s.get('tables', []):
+                grid_range = table.get('range', {})
+                a1_range = _grid_range_to_a1(sheet_title, grid_range)
+                tables_list.append({
+                    "tableId": table.get('tableId'),
+                    "name": table.get('name'),
+                    "sheet": sheet_title,
+                    "sheetId": s.get('properties', {}).get('sheetId'),
+                    "range": a1_range,
+                    "gridRange": grid_range,
+                    "columnProperties": table.get('columnProperties', []),
+                    "hasFooterRow": bool(table.get('hasFooterRow', False) or table.get('rowsProperties', {}).get('footerColorStyle')),
+                    "table": table
+                })
+
+        return tables_list
+    except Exception as e:
+        return [{"error": f"Failed to list tables: {str(e)}"}]
+
+
+@tool(
+    annotations=ToolAnnotations(
+        title="Update Table",
+        destructiveHint=True,
+    ),
+)
+def update_table(spreadsheet_id: str,
+                 table_id: Union[int, str],
+                 name: Optional[str] = None,
+                 sheet: Optional[str] = None,
+                 range: Optional[str] = None,
+                 columns: Optional[List[Dict[str, Any]]] = None,
+                 has_footer: Optional[bool] = None,
+                 ctx: Context = None) -> Dict[str, Any]:
+    """
+    Update an existing Table's properties, range, columns, or footer in a Google Spreadsheet.
+    
+    Args:
+        spreadsheet_id: The ID of the spreadsheet (found in the URL)
+        table_id: The ID of the table to update
+        name: Optional new name for the table
+        sheet: Optional sheet name (used when updating range)
+        range: Optional new cell range in A1 notation (e.g. 'A1:F20')
+        columns: Optional updated column definitions
+        has_footer: Optional boolean to toggle the footer row
+        
+    Returns:
+        Result of the updateTable operation.
+    """
+    sheets_service = ctx.request_context.lifespan_context.sheets_service
+
+    table_obj: Dict[str, Any] = {
+        "tableId": str(table_id) if isinstance(table_id, str) else table_id
+    }
+    fields_list = []
+
+    if name is not None:
+        table_obj["name"] = name
+        fields_list.append("name")
+
+    if range is not None:
+        sheet_id = None
+        if sheet is not None:
+            sheet_id = _get_sheet_id(sheets_service, spreadsheet_id, sheet)
+            if sheet_id is None:
+                return {"error": f"Sheet '{sheet}' not found in spreadsheet"}
+        else:
+            try:
+                meta = sheets_service.spreadsheets().get(
+                    spreadsheetId=spreadsheet_id,
+                    fields='sheets(properties(sheetId),tables(tableId,range(sheetId)))'
+                ).execute()
+                for s in meta.get('sheets', []):
+                    for tbl in s.get('tables', []):
+                        if str(tbl.get('tableId')) == str(table_id):
+                            sheet_id = tbl.get('range', {}).get('sheetId', s.get('properties', {}).get('sheetId'))
+                            break
+                    if sheet_id is not None:
+                        break
+            except Exception:
+                sheet_id = None
+
+        try:
+            range_indices = _parse_a1_notation(range)
+        except ValueError as e:
+            return {"error": str(e)}
+
+        range_obj = dict(range_indices)
+        if sheet_id is not None:
+            range_obj["sheetId"] = sheet_id
+        table_obj["range"] = range_obj
+        fields_list.append("range")
+
+    if columns is not None:
+        table_obj["columnProperties"] = _build_table_column_properties(columns)
+        fields_list.append("columnProperties")
+
+    if has_footer is not None:
+        if has_footer:
+            table_obj["rowsProperties"] = {
+                "footerColorStyle": {"rgbColor": {"red": 0.9, "green": 0.9, "blue": 0.9}}
+            }
+        else:
+            table_obj["rowsProperties"] = {}
+        fields_list.append("rowsProperties.footerColorStyle")
+
+    if not fields_list:
+        return {"error": "No fields provided to update (must provide at least one of: name, range, columns, has_footer)"}
+
+    request_body = {
+        "requests": [{
+            "updateTable": {
+                "table": table_obj,
+                "fields": ",".join(fields_list)
+            }
+        }]
+    }
+
+    try:
+        result = sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body=request_body
+        ).execute()
+
+        return {
+            "success": True,
+            "message": f"Table {table_id} updated successfully",
+            "result": result
+        }
+    except Exception as e:
+        return {"error": f"Failed to update table: {str(e)}"}
+
+
+@tool(
+    annotations=ToolAnnotations(
+        title="Append Table Rows",
+        destructiveHint=True,
+    ),
+)
+def append_table_rows(spreadsheet_id: str,
+                      table_id: Union[int, str],
+                      values: List[List[Any]],
+                      ctx: Context = None) -> Dict[str, Any]:
+    """
+    Append rows of data directly to a Table in a Google Spreadsheet.
+    
+    Appends values to the first free row inside the table, automatically expanding the table
+    and inserting rows before any footer.
+    
+    Args:
+        spreadsheet_id: The ID of the spreadsheet (found in the URL)
+        table_id: The ID of the table to append values to
+        values: 2D array of row data to append (e.g. [["Task 1", "Complete", 0.95], ["Task 2", "In Progress", 0.5]])
+        
+    Returns:
+        Result of the append operation.
+    """
+    sheets_service = ctx.request_context.lifespan_context.sheets_service
+
+    if not values:
+        return {"error": "values list cannot be empty"}
+
+    if not all(isinstance(row, list) for row in values):
+        return {"error": "values must be a list of lists (rows)"}
+
+    row_data = _build_row_data(values)
+    request_body = {
+        "requests": [{
+            "appendCells": {
+                "tableId": str(table_id) if isinstance(table_id, str) else table_id,
+                "rows": row_data,
+                "fields": "userEnteredValue"
+            }
+        }]
+    }
+
+    try:
+        result = sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body=request_body
+        ).execute()
+
+        return {
+            "success": True,
+            "message": f"Successfully appended {len(values)} row(s) to table {table_id}",
+            "result": result
+        }
+    except Exception as e:
+        return {"error": f"Failed to append rows to table: {str(e)}"}
+
+
+@tool(
+    annotations=ToolAnnotations(
+        title="Delete Table",
+        destructiveHint=True,
+    ),
+)
+def delete_table(spreadsheet_id: str,
+                 table_id: Union[int, str],
+                 ctx: Context = None) -> Dict[str, Any]:
+    """
+    Delete a Table from a Google Spreadsheet by its table ID.
+    
+    Args:
+        spreadsheet_id: The ID of the spreadsheet (found in the URL)
+        table_id: The ID of the table to delete
+        
+    Returns:
+        Result of the delete operation.
+    """
+    sheets_service = ctx.request_context.lifespan_context.sheets_service
+
+    request_body = {
+        "requests": [{
+            "deleteTable": {
+                "tableId": str(table_id) if isinstance(table_id, str) else table_id
+            }
+        }]
+    }
+
+    try:
+        result = sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body=request_body
+        ).execute()
+
+        return {
+            "success": True,
+            "message": f"Table {table_id} deleted successfully",
+            "result": result
+        }
+    except Exception as e:
+        return {"error": f"Failed to delete table: {str(e)}"}
+
+
+
 
 
 def main():
