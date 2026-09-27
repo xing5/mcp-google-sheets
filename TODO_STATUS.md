@@ -49,7 +49,7 @@ Source: `gh` authenticated as `xing5`, repo `xing5/mcp-google-sheets`.
 ## Feature Backlog
 
 - `todo` #78 Canvas tools: research whether Google Sheets API exposes Canvas creation/update. If API coverage is absent, answer with limitation.
-- `todo` #42 Tables API: design table create/read/update tools around Google Sheets tables API.
+- `done` #42 Tables API: implemented `create_table`, `list_tables`, `update_table`, `append_table_rows`, and `delete_table` with full unit and integration test coverage.
 - `todo` #41 Cell notes: can be implemented through `batch_update`/`updateCells` notes; either document a recipe or add a dedicated helper.
 - `todo` #25 Formatting: revive or replace PR #45; consider formatting, borders, number formats, alignment, and colors. Any implementation must add unit coverage and extend the live all-tools integration path.
 

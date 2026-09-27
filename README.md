@@ -154,13 +154,17 @@ When filtering, use these exact tool names (comma-separated, no spaces):
 - `list_sheets` - Navigate tabs
 
 **All Available Tools:**
+- `add_chart`
 - `add_columns`
 - `add_rows`
+- `append_table_rows`
 - `batch_update`
 - `batch_update_cells`
 - `copy_sheet`
 - `create_sheet`
 - `create_spreadsheet`
+- `create_table`
+- `delete_table`
 - `find_in_spreadsheet`
 - `get_multiple_sheet_data`
 - `get_multiple_spreadsheet_summary`
@@ -169,10 +173,12 @@ When filtering, use these exact tool names (comma-separated, no spaces):
 - `list_folders`
 - `list_sheets`
 - `list_spreadsheets`
+- `list_tables`
 - `rename_sheet`
 - `search_spreadsheets`
 - `share_spreadsheet`
 - `update_cells`
+- `update_table`
 
 **Note:** If neither `--include-tools` nor `ENABLED_TOOLS` is specified, all tools are enabled (default behavior).
 
@@ -270,6 +276,37 @@ _Refer to the [ID Reference Guide](#-id-reference-guide) for more information ab
     *   `width` (optional integer, default `600`): Width of the chart in pixels.
     *   `height` (optional integer, default `400`): Height of the chart in pixels.
     *   _Returns:_ Result object with success status, chart ID, and operation details.
+*   **`create_table`**: Creates a new structured Table in a Google Spreadsheet with column types, formatting, and validation.
+    *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
+    *   `sheet` (string): Name of the sheet/tab (e.g., "Sheet1").
+    *   `range` (string): A1 notation cell range for the table (e.g., "A1:E10").
+    *   `name` (string): Table name (e.g., "Project Tracker").
+    *   `columns` (optional array of objects): Column definitions. Each item can include `name` / `columnName`, `type` / `columnType` (e.g., `TEXT`, `NUMBER`, `PERCENT`, `CURRENCY`, `DATE`, `DROPDOWN`, `CHECKBOX`), `dropdown_values` (array of strings for dropdown chips), or custom `dataValidationRule`.
+    *   `table_id` (optional string or integer): Unique identifier for the table. If omitted, Google Sheets generates one.
+    *   `has_footer` (optional boolean): Whether to enable the table's total/footer row.
+    *   _Returns:_ Result object with created table details and `tableId`.
+*   **`list_tables`**: Lists all tables in a spreadsheet with their names, IDs, A1 ranges, column properties, and footers.
+    *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
+    *   `sheet` (optional string): Optional sheet name to filter tables by. If omitted, lists tables across all sheets.
+    *   _Returns:_ Array of table objects with `tableId`, `name`, `sheet`, `range` (in A1 notation), `columnProperties`, and `hasFooterRow`.
+*   **`update_table`**: Updates table metadata, range, column properties, or footer row.
+    *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
+    *   `table_id` (string or integer): The ID of the table to update.
+    *   `name` (optional string): New table name.
+    *   `sheet` (optional string): Sheet name (recommended when updating range).
+    *   `range` (optional string): New cell range in A1 notation (e.g., "A1:F20").
+    *   `columns` (optional array of objects): Updated column definitions.
+    *   `has_footer` (optional boolean): Toggle the table footer row on or off.
+    *   _Returns:_ Result object of the update operation.
+*   **`append_table_rows`**: Appends rows of data directly to a table. Automatically inserts rows before any footer row.
+    *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
+    *   `table_id` (string or integer): The ID of the table to append values to.
+    *   `values` (array of arrays): 2D array of row values (e.g., `[["Task 1", "In Progress", 0.5]]`).
+    *   _Returns:_ Result object confirming number of rows appended.
+*   **`delete_table`**: Deletes a table by its table ID.
+    *   `spreadsheet_id` (string): The spreadsheet ID (from its URL).
+    *   `table_id` (string or integer): The ID of the table to delete.
+    *   _Returns:_ Result object confirming deletion.
 
 **MCP Resources:**
 
