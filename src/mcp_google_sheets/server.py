@@ -24,6 +24,8 @@ from google.oauth2 import service_account
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from googleapiclient.http import HttpRequest, build_http
+from google_auth_httplib2 import AuthorizedHttp
 import google.auth
 
 logger = logging.getLogger(__name__)
@@ -154,9 +156,14 @@ async def spreadsheet_lifespan(server: FastMCP) -> AsyncIterator[SpreadsheetCont
             logger.error("Error using Application Default Credentials: %s", e)
             raise Exception("All authentication methods failed. Please configure credentials.")
     
+    # httplib2.Http is not thread-safe and tools run concurrently, so every request
+    # gets its own; build_http() keeps the socket timeout a bare Http() lacks.
+    def build_request(http, *args, **kwargs):
+        return HttpRequest(AuthorizedHttp(creds, http=build_http()), *args, **kwargs)
+
     # Build the services
-    sheets_service = build('sheets', 'v4', credentials=creds, cache_discovery=False)
-    drive_service = build('drive', 'v3', credentials=creds, cache_discovery=False)
+    sheets_service = build('sheets', 'v4', credentials=creds, cache_discovery=False, requestBuilder=build_request)
+    drive_service = build('drive', 'v3', credentials=creds, cache_discovery=False, requestBuilder=build_request)
     
     try:
         # Provide the service in the context
