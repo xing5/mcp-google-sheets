@@ -23,7 +23,7 @@ from google.oauth2.credentials import Credentials
 from google.oauth2 import service_account
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
+from googleapiclient.discovery import build, fix_method_name
 import google.auth
 
 logger = logging.getLogger(__name__)
@@ -154,9 +154,17 @@ async def spreadsheet_lifespan(server: FastMCP) -> AsyncIterator[SpreadsheetCont
             logger.error("Error using Application Default Credentials: %s", e)
             raise Exception("All authentication methods failed. Please configure credentials.")
     
+    def cache_nested_resources(resource):
+        for name in resource._resourceDesc.get('resources', {}):
+            name = fix_method_name(name)
+            child = getattr(resource, name)()
+            cache_nested_resources(child)
+            setattr(resource, name, lambda child=child: child)
+        return resource
+
     # Build the services
-    sheets_service = build('sheets', 'v4', credentials=creds, cache_discovery=False)
-    drive_service = build('drive', 'v3', credentials=creds, cache_discovery=False)
+    sheets_service = cache_nested_resources(build('sheets', 'v4', credentials=creds, cache_discovery=False))
+    drive_service = cache_nested_resources(build('drive', 'v3', credentials=creds, cache_discovery=False))
     
     try:
         # Provide the service in the context

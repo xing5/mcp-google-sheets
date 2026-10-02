@@ -1,4 +1,5 @@
 import ast
+import asyncio
 import os
 import sys
 import unittest
@@ -517,6 +518,28 @@ class ToolRequestConstructionTests(unittest.TestCase):
                 "heightPixels": 200,
             },
         )
+
+
+class LifespanTests(unittest.TestCase):
+    def test_nested_resources_are_built_once(self):
+        from google.auth.credentials import AnonymousCredentials
+
+        async def enter():
+            async with server.spreadsheet_lifespan(None) as ctx:
+                return ctx
+
+        with patch.object(server, "CREDENTIALS_CONFIG", "e30="), patch.object(
+            server.service_account.Credentials,
+            "from_service_account_info",
+            return_value=AnonymousCredentials(),
+        ):
+            ctx = asyncio.run(enter())
+
+        self.assertIs(
+            ctx.sheets_service.spreadsheets().values(),
+            ctx.sheets_service.spreadsheets().values(),
+        )
+        self.assertIs(ctx.drive_service.files(), ctx.drive_service.files())
 
 
 if __name__ == "__main__":
