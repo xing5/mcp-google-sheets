@@ -1,11 +1,18 @@
 import ast
+import asyncio
+import json
 import os
 import sys
+import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stdout
 from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import patch
+
+from mcp.server.mcpserver import MCPServer
 
 from mcp_google_sheets import server
 
@@ -521,3 +528,61 @@ class ToolRequestConstructionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConcurrencyProbeValuesResource(RecordingValuesResource):
+    """values().get().execute() that records how many handler bodies overlap."""
+
+    def __init__(self):
+        super().__init__()
+        self.active = 0
+        self.peak = 0
+        self.guard = threading.Lock()
+
+    def get(self, **kwargs):
+        probe = self
+
+        class SlowRequest:
+            def execute(self):
+                with probe.guard:
+                    probe.active += 1
+                    probe.peak = max(probe.peak, probe.active)
+                time.sleep(0.02)
+                with probe.guard:
+                    probe.active -= 1
+                return {"values": [["x"]]}
+
+        return SlowRequest()
+
+
+class McpServerV2Tests(unittest.TestCase):
+    def test_server_is_mcp_2_mcpserver(self):
+        self.assertIsInstance(server.mcp, MCPServer)
+
+    def test_registered_tool_schema_matches_wrapped_function(self):
+        tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+        props = tools["get_sheet_data"].input_schema["properties"]
+        self.assertEqual(
+            set(props),
+            {"spreadsheet_id", "sheet", "range", "include_grid_data"},
+        )
+        self.assertEqual(tools["get_sheet_data"].input_schema["required"], ["spreadsheet_id", "sheet"])
+
+    def test_info_resource_template_hides_ctx(self):
+        templates = asyncio.run(server.mcp.list_resource_templates())
+        self.assertIn("spreadsheet://{spreadsheet_id}/info", [t.uri_template for t in templates])
+
+    def test_info_resource_reads_lifespan_context_from_ctx(self):
+        sheets = RecordingSheetsService()
+        info = json.loads(server.get_spreadsheet_info("book-id", fake_ctx(sheets_service=sheets)))
+        self.assertEqual(info["title"], "Book")
+        self.assertEqual([s["title"] for s in info["sheets"]], ["Sheet1", "Data"])
+
+    def test_sync_handlers_never_overlap_on_worker_threads(self):
+        sheets = RecordingSheetsService()
+        probe = ConcurrencyProbeValuesResource()
+        sheets.spreadsheets_resource.values_resource = probe
+        ctx = fake_ctx(sheets_service=sheets)
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(lambda _: server.get_sheet_data("book-id", "Sheet1", "A1:B2", ctx=ctx), range(8)))
+        self.assertEqual(probe.peak, 1)

@@ -644,6 +644,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🙏 Credits
 
-*   Built with [FastMCP](https://github.com/cognitiveapis/fastmcp).
+*   Built with the [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) (`MCPServer`).
 *   Inspired by [kazz187/mcp-google-spreadsheet](https://github.com/kazz187/mcp-google-spreadsheet).
 *   Uses Google API Python Client libraries.

@@ -1,13 +1,15 @@
 #!/usr/bin/env python
 """
 Google Spreadsheet MCP Server
-A Model Context Protocol (MCP) server built with FastMCP for interacting with Google Sheets.
+A Model Context Protocol (MCP) server built with the MCP Python SDK's MCPServer for interacting with Google Sheets.
 """
 
 import base64
+import functools
 import logging
 import os
 import sys
+import threading
 from typing import List, Dict, Any, Optional, Union
 import json
 from dataclasses import dataclass
@@ -15,7 +17,7 @@ from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 
 # MCP imports
-from mcp.server.fastmcp import FastMCP, Context
+from mcp.server.mcpserver import MCPServer, Context
 from mcp.types import ToolAnnotations
 
 # Google API imports
@@ -82,7 +84,7 @@ class SpreadsheetContext:
 
 
 @asynccontextmanager
-async def spreadsheet_lifespan(server: FastMCP) -> AsyncIterator[SpreadsheetContext]:
+async def spreadsheet_lifespan(server: MCPServer) -> AsyncIterator[SpreadsheetContext]:
     """Manage Google Spreadsheet API connection lifecycle"""
     # Authenticate and build the service
     creds = None
@@ -179,12 +181,23 @@ try:
 except ValueError:
     _resolved_port = 8000
 
-# Initialize the MCP server with explicit host/port to ensure binding as configured
-mcp = FastMCP("Google Spreadsheet",
-              dependencies=["google-auth", "google-auth-oauthlib", "google-api-python-client"],
-              lifespan=spreadsheet_lifespan,
-              host=_resolved_host,
-              port=_resolved_port)
+# Initialize the MCP server. host/port are transport settings in mcp 2.x and are passed to run() in main().
+mcp = MCPServer("Google Spreadsheet",
+                dependencies=["google-auth", "google-auth-oauthlib", "google-api-python-client"],
+                lifespan=spreadsheet_lifespan)
+
+# mcp 2.x runs synchronous handlers on worker threads (v1 ran them on the event loop, one at a time).
+# The shared Google API clients sit on httplib2, which is not thread-safe, so serialize handler bodies.
+_GOOGLE_API_LOCK = threading.Lock()
+
+
+def _serialized(func):
+    """Run func under the Google API lock; functools.wraps keeps the signature MCPServer introspects."""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        with _GOOGLE_API_LOCK:
+            return func(*args, **kwargs)
+    return wrapper
 
 
 def tool(annotations: Optional[ToolAnnotations] = None):
@@ -208,9 +221,9 @@ def tool(annotations: Optional[ToolAnnotations] = None):
         if ENABLED_TOOLS is None or tool_name in ENABLED_TOOLS:
             # Apply the mcp.tool decorator
             if annotations:
-                return mcp.tool(annotations=annotations)(func)
+                return mcp.tool(annotations=annotations)(_serialized(func))
             else:
-                return mcp.tool()(func)
+                return mcp.tool()(_serialized(func))
         else:
             # Don't register this tool - return the function undecorated
             return func
@@ -847,7 +860,8 @@ def get_multiple_spreadsheet_summary(spreadsheet_ids: List[str],
 
 
 @mcp.resource("spreadsheet://{spreadsheet_id}/info")
-def get_spreadsheet_info(spreadsheet_id: str) -> str:
+@_serialized
+def get_spreadsheet_info(spreadsheet_id: str, ctx: Context) -> str:
     """
     Get basic information about a Google Spreadsheet.
     
@@ -857,9 +871,7 @@ def get_spreadsheet_info(spreadsheet_id: str) -> str:
     Returns:
         JSON string with spreadsheet information
     """
-    # Access the context through mcp.get_lifespan_context() for resources
-    context = mcp.get_lifespan_context()
-    sheets_service = context.sheets_service
+    sheets_service = ctx.request_context.lifespan_context.sheets_service
     
     # Get spreadsheet metadata
     spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
@@ -1743,4 +1755,7 @@ def main():
             transport = sys.argv[i + 1]
             break
 
-    mcp.run(transport=transport)
+    if transport == "stdio":
+        mcp.run(transport=transport)
+    else:
+        mcp.run(transport=transport, host=_resolved_host, port=_resolved_port)
