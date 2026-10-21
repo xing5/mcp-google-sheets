@@ -5,9 +5,12 @@ A Model Context Protocol (MCP) server built with FastMCP for interacting with Go
 """
 
 import base64
+import http.server
+import ipaddress
 import logging
 import os
 import sys
+import urllib.parse
 from typing import List, Dict, Any, Optional, Union
 import json
 from dataclasses import dataclass
@@ -35,6 +38,12 @@ TOKEN_PATH = os.environ.get('TOKEN_PATH', 'token.json')
 CREDENTIALS_PATH = os.environ.get('CREDENTIALS_PATH', 'credentials.json')
 SERVICE_ACCOUNT_PATH = os.environ.get('SERVICE_ACCOUNT_PATH', 'service_account.json')
 DRIVE_FOLDER_ID = os.environ.get('DRIVE_FOLDER_ID', '')  # Working directory in Google Drive
+# Where the interactive OAuth flow listens for Google's callback. Port 0 picks a random free port.
+OAUTH_HOST = os.environ.get('OAUTH_HOST', 'localhost')
+OAUTH_PORT = os.environ.get('OAUTH_PORT', '0')
+# Public URL that forwards to OAUTH_HOST:OAUTH_PORT (an HTTPS tunnel or reverse proxy), for when
+# the consent browser runs on a different machine. Unset, Google redirects to the local listener.
+OAUTH_REDIRECT_BASE = os.environ.get('OAUTH_REDIRECT_BASE', '')
 
 
 def _configure_logging() -> None:
@@ -72,6 +81,93 @@ def _parse_enabled_tools() -> Optional[set]:
     return tools if tools else None
 
 ENABLED_TOOLS = _parse_enabled_tools()
+
+
+def _oauth_listener_address() -> tuple:
+    """Return the (host, port) the OAuth callback listener binds, from OAUTH_HOST/OAUTH_PORT."""
+    try:
+        port = int(OAUTH_PORT)
+    except ValueError:
+        raise ValueError(f"OAUTH_PORT must be an integer, got {OAUTH_PORT!r}")
+    if not 0 <= port <= 65535:
+        raise ValueError(f"OAUTH_PORT must be between 0 and 65535, got {port}")
+    host = OAUTH_HOST.strip()
+    try:
+        unspecified = ipaddress.ip_address(host.strip('[]')).is_unspecified
+    except ValueError:
+        unspecified = not host  # a hostname such as "localhost"
+    if unspecified:
+        # A wildcard bind would accept the OAuth callback (and its auth code) on every interface.
+        raise ValueError(f"OAUTH_HOST must be a specific address, not {OAUTH_HOST!r}")
+    return host, port
+
+
+def _oauth_redirect_uri(base: str) -> str:
+    """Validate OAUTH_REDIRECT_BASE and return the redirect URI to register with Google."""
+    parsed = urllib.parse.urlsplit(base.strip())
+    if parsed.scheme != 'https' or not parsed.hostname or parsed.query or parsed.fragment:
+        raise ValueError(
+            f"OAUTH_REDIRECT_BASE must be an https:// URL with no query or fragment, got {base!r}")
+    return f"{parsed.geturl().rstrip('/')}/oauth2callback"
+
+
+def _run_oauth_flow(flow: InstalledAppFlow) -> Credentials:
+    """Run the interactive OAuth consent and return the user's credentials.
+
+    Without OAUTH_REDIRECT_BASE this is google-auth-oauthlib's loopback flow on
+    OAUTH_HOST:OAUTH_PORT. With it, Google redirects to <base>/oauth2callback, and a listener
+    on OAUTH_HOST:OAUTH_PORT (which the tunnel must forward to) completes the token exchange.
+    """
+    host, port = _oauth_listener_address()
+    if not OAUTH_REDIRECT_BASE:
+        return flow.run_local_server(host=host, port=port)
+
+    if port == 0:
+        raise ValueError("OAUTH_PORT must be set to the port your tunnel forwards to "
+                         "when OAUTH_REDIRECT_BASE is set")
+    flow.redirect_uri = _oauth_redirect_uri(OAUTH_REDIRECT_BASE)
+    # prompt=consent makes Google issue a refresh token even if this client was approved before.
+    auth_url, _ = flow.authorization_url(access_type='offline', prompt='consent')
+    # Logged rather than opened: the browser is on another machine. Logging goes to stderr, so
+    # this doesn't corrupt the stdio MCP stream.
+    logger.warning("Open this URL in a browser to authorize Google Sheets access:\n%s", auth_url)
+
+    outcome: Dict[str, Any] = {}
+
+    class CallbackHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            # Match on the last path segment only: a proxy may or may not strip a base path prefix.
+            request = urllib.parse.urlsplit(self.path)
+            if not request.path.endswith('/oauth2callback'):
+                self.send_error(404)
+                return
+            query = urllib.parse.parse_qs(request.query)
+            if 'error' in query:
+                outcome['error'] = query['error'][0]
+                self.send_error(400, f"Authorization failed: {outcome['error']}")
+                return
+            try:
+                flow.fetch_token(authorization_response=f"{flow.redirect_uri}?{request.query}")
+                credentials = flow.credentials
+            except Exception as e:  # stale tab, replayed code, or state mismatch: keep waiting
+                logger.error("OAuth token exchange failed: %s", e)
+                self.send_error(400, "Token exchange failed. Retry from the authorization URL.")
+                return
+            outcome['credentials'] = credentials
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b"Google Sheets authorized. You can close this tab.")
+
+        def log_message(self, *args):
+            pass  # BaseHTTPRequestHandler logs to stderr per request; the flow logs what matters
+
+    with http.server.HTTPServer((host, port), CallbackHandler) as callback_server:
+        while not outcome:
+            callback_server.handle_request()
+    if 'error' in outcome:
+        raise RuntimeError(f"OAuth authorization failed: {outcome['error']}")
+    return outcome['credentials']
 
 @dataclass
 class SpreadsheetContext:
@@ -130,7 +226,7 @@ async def spreadsheet_lifespan(server: FastMCP) -> AsyncIterator[SpreadsheetCont
             if not creds:
                 try:
                     flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_PATH, SCOPES)
-                    creds = flow.run_local_server(port=0)
+                    creds = _run_oauth_flow(flow)
 
                     # Save the credentials for the next run
                     with open(TOKEN_PATH, 'w') as token:

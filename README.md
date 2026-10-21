@@ -326,6 +326,21 @@ _Refer to the [ID Reference Guide](#-id-reference-guide) for more information ab
     3.  **Set Environment Variables:**
         *   `CREDENTIALS_PATH`: Path to the downloaded OAuth credentials JSON file (default: `credentials.json`).
         *   `TOKEN_PATH`: Path to store the user's refresh token after first login (default: `token.json`). Must be writable.
+        *   *(Optional)* `OAUTH_HOST` / `OAUTH_PORT`: Address the login callback listener binds (default: `localhost` on a random free port). Wildcard addresses such as `0.0.0.0` are refused.
+
+#### Logging in from another machine (remote server, tunnel or reverse proxy)
+
+The default login redirects your browser to `http://localhost:<port>/`, which only works when the browser runs on the same machine as the server. If the server runs remotely, expose a fixed local port over HTTPS (a tunnel such as `cloudflared` or `ngrok`, or a reverse proxy) and set:
+
+*   `OAUTH_REDIRECT_BASE`: The public HTTPS URL that forwards to the listener, e.g. `https://my-tunnel.example.com`. Google is sent `<OAUTH_REDIRECT_BASE>/oauth2callback` as the redirect URI.
+*   `OAUTH_PORT`: The local port the tunnel forwards to (required with `OAUTH_REDIRECT_BASE`). The listener binds `OAUTH_HOST` (default `localhost`), so it stays private to the machine.
+
+Then:
+
+1.  Use a **Web application** OAuth client (Desktop clients only accept localhost redirects) and add `<OAUTH_REDIRECT_BASE>/oauth2callback` under **Authorized redirect URIs**. The downloaded JSON (`"web"` or `"installed"` format) goes in `CREDENTIALS_PATH` as usual.
+2.  Start the server. When it needs a token it logs an authorization URL to stderr instead of opening a browser. Open it on any machine, approve, and the token is saved to `TOKEN_PATH`. The server refreshes it from then on.
+
+To log in from a terminal before wiring the server into a client, run it directly (`uvx mcp-google-sheets@latest` with the variables set), complete the login, and stop it with Ctrl-C once `Successfully authenticated using OAuth flow` is logged.
 
 ### Method C: Direct Credential Injection (Advanced) 🔒
 
@@ -387,6 +402,9 @@ The server checks for credentials in this order:
 | `CREDENTIALS_PATH`               | OAuth 2.0                   | Path to the OAuth 2.0 Client ID JSON file.                       | `credentials.json` |
 | `TOKEN_PATH`                     | OAuth 2.0                   | Path to store the generated OAuth token.                         | `token.json`       |
 | `CREDENTIALS_CONFIG`             | Service Account / OAuth 2.0 | Base64 encoded JSON string of credentials content.               | -                  |
+| `OAUTH_HOST`                     | OAuth 2.0                   | Address the login callback listener binds.                       | `localhost`        |
+| `OAUTH_PORT`                     | OAuth 2.0                   | Port the login callback listener binds (`0` = random).           | `0`                |
+| `OAUTH_REDIRECT_BASE`            | OAuth 2.0                   | Public HTTPS URL forwarding to the listener, for remote login.   | -                  |
 
 ---
 
