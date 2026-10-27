@@ -543,7 +543,7 @@ requires-dist = [
     { name = "google-api-python-client", specifier = ">=2.117.0" },
     { name = "google-auth", specifier = ">=2.28.1" },
     { name = "google-auth-oauthlib", specifier = ">=1.2.0" },
-    { name = "mcp", specifier = ">=1.8.0" },
+    { name = "mcp", specifier = ">=1.8.0,<2" },
 ]
 
 [[package]]
